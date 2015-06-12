@@ -1,0 +1,39 @@
+Las extensiones y los módulos contribs son Add-ons que se pueden instalar en una base de datos para  extender su funcionalidad más allá de lo que ofrece PostgreSQL. \\
+
+Antes de PostgreSQL 9.1 los add-ons se llamaban contribs, a partir de esa versión, los add-ons son instalados con facilidad mediante el nuevo modelo de extensiones, término que ha reemplazado a contrib.\\
+
+Las extensiones son instaladas por separado en cada base de datos. Se puede tener una base de datos con una extensión y las demás no tenerla. Si se desea que todas las bases de datos tengan un esquema, este se debe instalar en la base de datos \textit{template1} para que al crearse una nueva, tenga a su vez la extensión deseada.\\
+
+Para ver las extensiones instaladas se ejecuta:\\
+
+\textit{SELECT * FROM pg\_available\_extensions;}\\
+
+Para tener los detalles de una extensión en particular se utiliza el siguiente comando:\\
+
+\textit{\textbackslash dx+ plpgsql}\\
+
+\section{Instalar Extensiones}
+
+Para instalar una extensión se deben de colocar sus scripts en \textit{share/extension} y sus binarios en \textit{lib} y \textit{bin}. En el caso de las extensiones más comunes, estas ya se encuentran precompiladas y solo falta instalarlas.\\
+
+La forma moderna y sencilla de instalar una extensión es:\\
+
+\emph{CREATE EXTENSION fuzzystrmatch;}\\
+
+Si se desea instalar la extensión en un esquema particular, primero se crea el esquema y luego se instala la extensión:\\
+
+\emph{CREATE EXTENSION fuzzystrmatch SCHEMA my\_extensions;} \\
+
+\section{Extensiones Comunes}
+
+Diversas extensiones vienen empaquetadas con PostgreSQL pero no son instaladas por defecto. Algunas de las más populares son:\\
+
+\begin{itemize}
+\item \textbf{Postgis}: Una extensión que coloca a PostgreSQL entre las principales bases de datos geográficas. Está compuesto de más de 800 funciones, tipos e índices espaciales.
+\item \textbf{fuzzystrmatch}: Es una extensión ligera para trabajar de forma difusa con cadenas.
+\item \textbf{hstore}: Es una extensión que agrega almacenamiento por llave y valor (tipo diccionario) para guardar data pseudo normalizada. Útil para servir de intermedio entre relacional y NoSQL.
+\item \textbf{pg\_trgm}: Una extensión utilizada para manejar de forma difusa cadenas de texto.
+\item \textbf{dblink}: Módulo que permite hacer consultas a otras bases de datos. Es el único mecanismo para trabajar entre bases de datos con PostgreSQL.
+\item \textbf{pgcrypto}: Provee herramientas de cifrado incluyendo PGP. 
+\end{itemize}
+

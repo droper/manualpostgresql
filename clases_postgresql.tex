@@ -1,0 +1,103 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%
+% Clases de Postgresql
+%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\documentclass[12pt,a4paper,oneside, openany]{book}
+\textheight=26cm
+\textwidth=18cm
+\topmargin=-2cm
+\oddsidemargin=-1cm
+\parindent=0mm
+
+\usepackage[utf8x]{inputenc}
+\usepackage[spanish]{babel}
+\usepackage{ucs}
+\usepackage{amsmath,amsfonts,amssymb}
+\usepackage{graphicx}
+\usepackage{anyfontsize}
+\usepackage{float}
+\usepackage{textcomp}
+%Paquete verbments para obtener bonito código fuente
+\usepackage{verbments}
+
+\fvset{frame=single,framerule=1pt}
+\plset{language=sql,texcl=true,style=vs,%
+captionfont=\sffamily\color{white}}
+
+\setcounter{chapter}{0}
+
+\pagestyle{plain}
+
+
+%--------------------------------------------------------------------------
+%titulo
+\title{ 
+ \begin{center}
+  {Introducción a PostgreSQL}\\
+ \end{center}
+}
+
+\author{Ing. Pedro Muñoz del Rio\\
+        pmunoz@gmail.com}
+
+\date{Lima, Perú}
+
+\begin{document}
+
+\renewcommand{\baselinestretch}{1.5} %espacio entre lineas, 2 es doble espacio
+\renewcommand{\contentsname}{Índice}
+\renewcommand{\listfigurename}{Lista de Gr\'aficos}
+\renewcommand{\chaptername}{Cap\'itulo}
+\renewcommand{\bibname}{Fuentes de Informaci\'on}
+\renewcommand{\figurename}{Gr\'afico}
+\renewcommand{\tablename}{Tabla}
+
+ \maketitle %despliega el titulo
+ 
+  \frontmatter  %Secciones del documento que van con numeros romanos en el indice 
+ 
+   \input{introduccion_postgresql.tex} %Resumen y Abstract
+  
+ \tableofcontents %despliega el índice
+ \listoffigures   %Tabla de figuras
+      
+ \mainmatter  %Cuerpo del documento  
+
+ %Cuerpo del documento 
+
+ \chapter{Arquitectura del Sistema}
+    \input arquitectura_postgresql.tex
+
+ \chapter{Administración}
+    \input administracion_postgresql.tex
+
+ \chapter{Transacciones y concurrencia}
+    \input transacciones_postgresql.tex
+    
+ \chapter{Ajustes de rendimiento}
+ 	\input ajustes_postgresql.tex
+ 	
+ \chapter{Ajustes de rendimiento II: Optimización de las Bases de datos}
+ 	\input ajustes_postgresql_querys.tex
+ 	
+ \chapter{Alta disponibilidad y replicación}
+ 	\input alta_disponibilidad_postgresql.tex
+ 	
+ \chapter{Particionado de tablas}
+ 	\input particionado_tablas_postgresql.tex 	
+ 	
+ \chapter{Pooling de conexiones}
+	\input pooling_conexiones_postgresql.tex 	
+ 	
+ \chapter{Lenguajes Procedurales}
+ 	\input lenguajes_procedurales_postgresql.tex 	 	 	
+ 
+ \chapter{Extensiones y contrib}
+ 	\input extensiones_contrib.tex  		 	 	
+
+   \bibliographystyle{miestilo}
+   \bibliography{bibliografia}
+
+\end{document}

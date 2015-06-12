@@ -1,0 +1,330 @@
+PostgreSQL provee las herramientas para gestionar el acceso concurrente a la data. La consistencia de la data es mantenida internamente utilizando un modelo de multiversión (Multiversion Concurrency Control, MVCC). Esto significa que al consultar una Base de Datos cada transacción ve una “instantánea” de la data tal como era algún tiempo antes, sin importar el estado actual de la data subyacente. Esto protege a la transacción de ver data inconsistente que puede haber sido causada por otras transacciones concurrentes en los mismos registros. Proveyendo aislamiento de la transacción para cada sesión en la BD.\\
+
+La principal ventaja de utilizar el modelo MVCC de control de la concurrencia en vez del bloqueo de registros es que en MVCC los bloqueos por leer data no interfieren con los bloqueos por escribir data en un registro así las operaciones no se bloquean entre si. \cite{Group2013}
+
+\section{Definición de Transacción}
+
+Las transacciones son uno de los conceptos fundamentales de todos los sistemas de bases de datos. El punto esencial es que una transacción engloba un múltiples pasos en una sola operación donde se ejecuta todo o nada.  Los pasos intermedios antes de culminar la transacción no son visibles para las transacciones concurrentes y si alguna falla ocurre, que evita que la transacción se complete, ninguno de los pasos previos afecta a la base de datos.\\
+
+Si un conjunto de operaciones de una transacción afectan a varios tablas en una base de datos, si una sola de las operaciones falla, todas las demás operaciones quedan sin efecto y la base de datos no es modificada por la transacción.\\
+
+Por ejemplo, si en un banco se realiza una transferencia entre dos cuentas y una operación resta dinero de una cuenta pero otra operación no puede a sumarlo al destinatario, toda la transacción se cancela. Una transacción es atómica, desde el punto de vista de otras transacciones o se lleva a cabo completamente o no en absoluto, además, antes de darse por terminada la transacción, todas las actualizaciones hechas la BD son guardadas en almacenamiento permanente (p. ej. disco duro).\\
+
+Dadas las siguientes operaciones:\\
+
+\begin{pyglist}
+UPDATE accounts SET balance = balance - 100.00
+WHERE name = 'Alice';
+UPDATE branches SET balance = balance - 100.00
+WHERE name = (SELECT branch_name FROM accounts WHERE name = 'Alice');
+UPDATE accounts SET balance = balance + 100.00
+WHERE name = 'Bob';
+UPDATE branches SET balance = balance + 100.00
+WHERE name = (SELECT branch_name FROM accounts WHERE name = 'Bob');
+\end{pyglist}
+
+Los detalles de los comandos no son importantes, lo crucial es que hay varias actualizaciones envueltas en una sola operación.El banco por supuesto desea estar seguro de que las transacciones realizadas tengan éxito todas o ninguna se lleve a cabo, caso contrario la data guardada no sera coherente. Para garantizar que situaciones así no se produzcan se agrupan las operaciones en transacciones.\\
+
+Una transacción además debe de ser registrada y guardada de forma permanente antes de reportarse como terminada.\\
+
+Otra propiedad importante de las transacciones es el aislamiento: cuando múltiples transacciones están ejecutandose al mismo tiempo, cada una no debe de ser capaz de ver los cambios incompletos llevados a cabo por otros. Por ejemplo, si una transacción está ocupada cuadrando los balances de caja no debería ver solo la transacción iniciada por Alice o Bob, sino el resultado final de toda la transacción. Es por esto que las transacciones deben ser ``todo o nada'' no solo en sus efectos permanentes en la base de datos sino en la visibilidad de sus resultados a medida que avanza. Es por esto que los resultados de una transacción son invisibles para otras transacciones hasta que la transacción termina, donde todos los cambios a la data se vuelven visibles simultaneamente.\\
+
+En PostgreSQL una transacción se lleva a cabo utilizando los comandos BEGIN y COMMIT al inicio y fin de la transacción, por ejemplo:\\
+
+\begin{pyglist}
+BEGIN;
+UPDATE accounts SET balance = balance - 100.00
+WHERE name = 'Alice';
+-- etc etc
+COMMIT;
+\end{pyglist}
+
+Si en algún punto de la transacción decidimos no hacer commit, podemos eliminar todos los cambios mediante el comando ROLLBACK.\\
+
+Por defecto, PostgreSQL trata a cada comando SQL como una transacción, colocando BEGIN al inicio de la transacción y  COMMIT al final si es exitosa.\\
+
+\subsection{Savepoints}
+
+Es posible controlar las operaciones en una trasacción de una forma más fina mediante el uso de \textit{savepoints}. Los savepoints permiten descartar selectivamente partes de una transacción y enviar (commit) el resto a la BD. Después de definir un \textit{Savepoint} en una transacción , se puede hacer ROLLBACK TO de regreso al \textit{savepoint}. Todos los cambios a la base de datos entre la definición del \textit{Savepoint} y el rollbak son descartadas, pero los cambios previos al \textit{Savepoint} son guardados.\\
+
+Se puede regresar a un \textit{savepoint} varias veces en el transcurso de una transacción.\\
+
+Regresando al ejemplo del banco, la transacción podría ser la siguiente:\\
+
+\begin{pyglist}
+BEGIN;
+UPDATE accounts SET balance = balance - 100.00
+WHERE name = 'Alice';
+SAVEPOINT my_savepoint;
+UPDATE accounts SET balance = balance + 100.00
+WHERE name = 'Bob';
+-- En realidad mejor utilizamos la cuenta de Wally
+ROLLBACK TO my_savepoint;
+UPDATE accounts SET balance = balance + 100.00
+WHERE name = 'Wally';
+COMMIT;
+\end{pyglist}
+
+\textit{ROLLBACK} es la única manera de recuperar el control de una transacción que ha sido bloqueada por el sistema debido a un error en una de sus transacciones.
+
+\section{Niveles de Aislamiento de las Transacciones}
+
+Existen cuatro niveles de aislamiento de las transacciones en el estándar SQL, cada uno de los cuales permite que se lleven o no a cabo tres comportamientos.\\
+
+Los comportamientos son:
+
+\begin{itemize}
+\item \textbf{Dirty read}: Una transacción lee data escrita por una transacción aún no enviada (commited).
+\item \textbf{Nonrepeatable read}: Una transacción vuelve a leer data que ha leido previamente y encuentra que ha sido modificada por otra transacción que envío data después de enviada la actual transacción.
+\item \textbf{Phantom read}: Una transacción vuelve a ejecutar una consulta que devuelve un conjunto de registros que satisfacen determinada condición de búsqueda y encuentra que este conjunto de registros a cambiado debido a otra transacción concurrente.
+\end{itemize}
+
+Los cuatro niveles y sus respectivos comportamientos según PostgreSQL:\\
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|c|c|c|c|} \hline
+Isolation Level & Dirty Read   & Nonrepeatable Read & Phantom Read \\ \hline
+Read uncommitted & Not possible & Possible           & Possible     \\ \hline
+Read committed   & Not possible & Possible           & Possible     \\ \hline
+Repeatable read  & Not possible & Not possible       & Not possible \\ \hline
+Serializable     & Not possible & Not possible       & Not possible \\ \hline
+\end{tabular}
+\caption{Niveles de aislamiento}
+\end{table}
+
+Como se puede observar, Read uncommitted y Read commited son iguales según la implementación de PostgreSQL y el valor adicional de Serializable sobre Repeteable Read es el monitoreo para evitar que transacciones concurrentes no puedan ser serializadas. Read uncommitted se mantiene para fines de compatibilidad.\\
+
+\subsection{Detalle de los niveles de aislamiento}
+
+Los niveles de aislamiento (isolation levels) son un aspecto central en el manejo de las transacciones por lo cual lo abordaremos con detalle.\\
+
+Para establecer el nivel de aislamiento de una transacción se utiliza \textit{SET TRANSACTION}.\\
+
+\begin{pyglist}
+SET TRANSACTION ISOLATION LEVEL { SERIALIZABLE | REPEATABLE READ 
+                            | READ COMMITTED | READ UNCOMMITTED };
+\end{pyglist}
+
+Una vez realizada la primera consulta, ya no se puede cambiar el nivel de aislamiento de la transacción.
+
+\subsubsection{Read commited}
+
+Es el nivel de aislamiento por defecto en PostgreSQL. Cuando una transacción utiliza este nivel, un SELECT solo ve data enviada antes de que la consulta empiece, nunca ve data no enviada (uncommitted) o cambios enviados por transacciones concurrentes durante la ejecución de la consulta. Sin embargo, SELECT si ve los cambios efectuados dentro de la transacción así no hayan sido aún enviados. Además, cada SELECT ve datos diferentes si otra transacción ha cambiado los datos antes de que empiece a ejecutarse, por lo que diferentes SELECT dentro de una misma transacción pueden ver diferente data en la BD. \\
+
+Por ejemplo, en una sesión A ejecutar los siguientes comandos sobre una tabla existente.\\
+
+\begin{pyglist}
+BEGIN;
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+SELECT * FROM tabla_ejemplo;
+\end{pyglist}
+
+Luego en una sesión B ejecutar:\\
+
+\begin{pyglist}
+UPDATE tabla_ejemplo SET .... WHERE ...;
+\end{pyglist}
+
+En la sesión A volver a ejecutar un SELECT y terminar la transacción:\\
+
+\begin{pyglist}
+SELECT * FROM tabla_ejemplo; 
+END;
+\end{pyglist}
+
+Se puede observar que los dos select en la misma transacción devolvieron resultados diferentes.\\
+
+Los comandos de escritura (UPDATE, DELETE, SELECT FOR UPDATE y SELECT FOR SHARE) se comportan igual que SELECT al buscar registros: solo van a encontrar los registros que ya estaban enviados (committed) al empezar el comando. Si el registro ha sido modificado después de que empezó el comando, el comando va a esperar a que los cambios se envíen o se descarten. Si los cambios de la transacción anterior se envían, la segunda transacción va a ignorar el registro si ha sido eliminado por la primera o va a tomar en cuenta los cambios si ha sido modificado, reevaluando la condición de búsqueda (WHERE) para comprobar si se sigue aplicando.\\
+
+Por ejemplo, abrir una sesión A y ejecutar:\\
+
+\begin{pyglist}
+BEGIN:
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+UPDATE tabla_ejemplo SET .... WHERE ...;
+\end{pyglist}
+
+En otra sesión B ejecutar:\\
+
+\begin{pyglist}
+BEGIN:
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+UPDATE tabla_ejemplo SET .... WHERE ...;
+\end{pyglist}
+
+Mientras la primera transacción no termine, la segunda transacción se quedará esperando el resultado.
+
+Debido a lo explicado, el modo Read committed puede llevar a ver una instantánea inconsistente de la BD: puede ver los efectos de actualizaciones concurrentes en las registros que está procurando actualizar pero no ve los efectos de estos comando en otros registros de la BD.\\
+
+Usos complejos de la Bd pueden producir resultados indeseados en el modo Read Committed, por ejemplo un comando DELETE que opere en data que ha sido agregada y removida de su criterio de búsqueda por otro comando, como en la siguiente transacción.\\
+
+\begin{pyglist}
+BEGIN;
+UPDATE website SET hits = hits + 1;
+-- Execute in other sesion: DELETE FROM website WHERE hits = 10;
+COMMIT;
+\end{pyglist}
+
+Los valores que tengan 10 antes o después de la actualización no van a ser afectados, ya que los que tienen 9 antes de la actualización siguen siendo vistos como 9 por el DELETE concurrente y los que tienen 10 están siendo modificados por la primera transacción por lo que el DELETE debe esperar a que termine la actualización y en ese momento su valor será de 11.\\
+
+Es debido a esta característica que Read Committed no es adecuado para todos los casos.\footnote{\cite{Group2013} pp. 342}
+
+\subsubsection{Repeatable Read}
+
+Este nivel solo ve ve data enviada antes de que la transacción haya empezado, nunca ve data no enviada o enviada después de que la transacción haya empezado. Si embargo la transacción si ve los cambios enviados dentro de si aunque aún no hayan sido enviados. Este nivel de aislamiento previene todos los comportamientos mencionados en la tabla anterior.\footnote{\cite{Group2013} pp. 343}\\
+
+En este nivel, los SELECT dentro de una transacción ven todos la misma data en la BD, data anterior a que la transacción empezara a ejecutarse.\\
+
+Por ejemplo, llevar a cabo la misma prueba con el SELECT que con Read commited, pero definiendo Repeatable Read como nivel de aislamiento utilizando:\\
+
+\begin{pyglist}
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+\end{pyglist}
+
+Los comandos que actualizan data (UPDATE, DELETE, SELECT FOR UPDATE y SELECT FOR SHARE) tienen el mismo comportamiento del SELECT al buscar registros pero en caso de que un registro este siendo modificado por una transacción concurrente van a esperar que acabe y si el registro ha sido modificado, no se va a poder llevar a cabo la operación y toda la transacción va a ser cancelada con el siguiente mensaje:\\
+
+\textit{ERROR: could not serialize access due to concurrent update}\\
+
+Cuando una aplicación recibe este mensaje de error debe cancelar la actual transacción y volverla a empezar de cero. Esta segunda vez la transacción vera las actualizaciones llevadas a cabo en los registros por las otras transacciones.\\
+
+Este nivel de aislamiento provee una rigurosa garantía de que cada transacción verá una imagen estable de la BD dentro de si. Aún así, este nivel puede tener problemas debido a transacciones concurrentes que provoquen continuas cancelaciones de una transacción.
+
+\subsubsection{Serializable}
+
+Este nivel provee el aislamiento más estricto para las transacciones. Este nivel emula ejecución serial de las transacciones, como si hubieran sido ejecutadas una después de la otra, de forma serial en vez de concurrente. Aún así, las aplicaciones deben estar listas para cancelar transacciones debido a fallas en la serialización.\\
+
+Este nivel trabaja igual que Repeatable Read a excepción de que monitorea las condiciones que pueden hacer que un conjunto serializable de transacciones concurrentes se comporte de manera inconsistente con todas las posibles ejecuciones seriales de estas transacciones.\\
+
+Para garantizar la serialización PostgreSQL utiliza “predicate locking” o bloqueo por predicados, el cual consiste en analizar las transacciones para verificar si el orden de ejecución es consistente con el resultado.\\
+
+Por ejemplo, dada la tabla mytab:\\
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|c|c|} \hline
+Class & Value       \\ \hline
+1     & 10          \\ \hline
+1     & 20          \\ \hline
+2     & 100         \\ \hline
+2     & 200         \\ \hline
+\end{tabular}
+\end{table}
+
+Tenemos dos transacciones, la transacción A es:\\
+
+\begin{pyglist}
+INSERT INTO t VALUES (2, (SELECT SUM(value) FROM mytab WHERE class = 1));
+\end{pyglist}
+
+Y luego inserta el resultado (30) en el campo value  de un nuevo registro cuyo campo class = 2. Concurrentemente, la transacción B es:\\
+
+\begin{pyglist}
+INSERT INTO t VALUES (1, (SELECT SUM(value) FROM mytab WHERE class = 2));
+\end{pyglist}
+
+
+Y obtiene el resultado 300 el cual inserta en un registro cuyo campo \textit{class = 1}. Luego ambas transacciones hacen commit, como no hay un orden serial de ejecución consistente con el resultado, el modo Serializado va a permitir a una transacción enviar su data a la BD y la otra va a ser cancelada con el mensaje:\\
+
+\textit{ERROR:  could not serialize access due to read/write dependencies among transactions }\\
+
+Esto se debe a que si A se ejecuta antes de B, B hubiera obtenido un resultado de 330 no 300 y al revés hubiera resultado en A con el valor de 330 como resultado.\\
+
+El bloqueo por predicados en PostgreSQL, está basado en la data accedida por la transacción. La garantía de que un conjunto de transacciones concurrentes serializables va a tener el mismo efecto que si se ejecutaran una tras otra, significa que si se puede demostrar que cada transacción por separado va a tener el resultado esperado al ejecutarse, se puede tener confianza de que va a hacerlo bien en un conjunto de transacciones aún sin información sobre lo que el resto de transacciones va a hacer.\\
+
+\section{Descripción del Control de Concurrencia}
+
+\begin{itemize}
+\item  Al crear o modificar un registro, el nuevo registro así creado guarda el ID de la transacción en un campo llamado XID también llamado xmin, el mínimo XID capaz de ver este trozo de información una vez ha sido enviado.
+\item Cuando una consulta es ejecutada utiliza el ID de la actual transacción como un límite para lo que puede considerarse visible. Los registros cuyo xmin es menor que el ID de la transacción y han sido enviados son considerados para ser mostrados en la consulta.
+\item Un mecanismo similar gestiona la eliminación. Cada registro tiene un XID de eliminación, también llamado el xmax, que empieza vacío para indicar que el registro no ha sido borrado. Cuando se borra un registro, el ID de la actual transacción se convierte en su xmax , para indicar que no va a ser más visible después de ese punto en el tiempo (o mejor dicho en el histórico de transacciones). Al ejecutarse una consulta, solo incluye un registro con xmax si este es anterior al XID de la consulta.
+\item Xmin y xmax son en esencia el tiempo de vida visible del registro en términos de Ids. El registro solo es visible desde una consulta cuyo XID este entre ambos.
+\item El registro original va a ser eliminado después de un tiempo por VACUUM, el módulo de PostgreSQL que elimina periódicamente los registros que ya no van a ser utilizados. \cite{GregorySmith2010}
+\end{itemize}
+
+Para ver los ids en funcionamiento se puede utilizar la función txid\_current\_snapshot().
+
+\section{Diferencias entre MVCC y Bloqueo}
+
+PostgreSQL provee varios modos de bloqueo para para controlar el acceso concurrente a la data en las tablas. En general todas las consultas llevan a cabo alguna forma de bloqueo sobre la data a la que acceden.\\
+
+Un bloqueo es ejecutado por un comando como SELECT o UPDATE para tener acceso a la data con la que están trabajando, en cambio MVCC es un modelo de trabajo del gestor de base de datos para permitir que varias transacciones al mismo tiempo (concurrencia) puedan acceder a la misma data en la BD.\\
+
+La principal ventaja de utilizar el modelo MVCC sobre bloqueo es que los bloqeuos de MVCC para escribir data no entran en conflicto con los bloqueos para leer data. PostgreSQL mantiene la garantía de que no va a necesitar bloquear ambos aún al proveer los más estrictos niveles de aislamiento de la transacción.\\
+
+Bloqueo a nivel de tablas y registro está disponible en PostgreSQL para aplicaciones que generalmente no necesitan aislar completamente las transacciones y prefieren manejar gestionar explicitamente los puntos de conflicto.
+
+\section{Ejemplo MVCC}
+
+\subsection{UPDATES}
+
+Si dos sesiones al mismo tiempo procuran alterar un registro una de las dos esperará hasta que la otra termine. Una vez que la primera sesión termina, dependiendo de la configuración del servidor se toma una decisión.
+
+\begin{itemize}
+\item Una configuración es el modo por defecto Read Committed, en el cual la existencia de otra sesión que modifica el mismo registro solo provoca que se verifique si las condiciones para cambiar el registro aún existen en el registro cambiado por la primera transacción, si ese es el caso se procede con el cambio, caso contrario la segunda transacción no afecta al registro.
+\item El otro modo de configuración es la Serialización. Si otra sesión intenta modificar un registro que ya está siendo modificado espera a que termine la primera transacción, si la transacción original se termina, la segunda transacción no puede modificar el registro y aparece un error:
+
+\begin{itemize}
+\item \textit{ERROR: could not serialize access due to concurrent updates}
+\item Y la sesión no tiene otra opción que eliminar la transacción en curso.
+\item Este modo se utiliza cuando se requiere que la sesión opere con una vista idéntica de la BD.
+\end{itemize}
+
+\end{itemize}
+
+Para probar créese una tabla y un registro en la BD:
+
+\begin{enumerate}
+\item \textbf{\$ psql -d Bd\_prueba}
+\item \textit{CREATE TABLE t (s SERIAL, i INTEGER);}
+\item \textit{INSERT into t(i) values (0)}
+\item Para ver los valores xmin y xmax
+
+\begin{itemize}
+\item \textit{SELECT xmin,xmax from t;}
+\end{itemize}
+
+\item Para ver el id de la actual transacción.
+
+\begin{itemize}
+\item \textit{SELECT txid\_current();}
+\end{itemize}
+
+\end{enumerate}
+
+Luego desde otra sesión iníciese una transacción mediante Begin y actualícese el registro pero no se envíe (commit) aún.
+
+\begin{enumerate}
+\item Para iniciar la transacción.
+\begin{itemize}
+\item \textit{Begin;}
+\end{itemize}
+\item Para ver el id de la ctual transacción
+\begin{itemize}
+\item \textit{select txid\_current();}
+\end{itemize}
+\item Actualizar el registro
+\item \textit{UPDATE t SET i=100 WHERE s=1;}
+\end{enumerate}
+
+Desde la perspectiva de la segunda sesión el registro se ha actualizado, pero si hacemos un select en la primera sesión, no se va a ver el cambio hecho en la segunda hasta que sea enviado.
+
+\subsection{DELETE}
+
+Al eliminar un registro hay algunas diferencias con modificarlo. Al eliminar un registro, este no se puede ir hasta que toda sesión que lo pueda necesitar haya terminado. Al eliminar un registro, este no cambia el registro en si, sino su información de visibilidad para que ya no sea visible por otras sesiones.
+
+\newpage
+
+Ejercicios:
+
+\begin{enumerate}
+\item Crear una tabla llamada "tabla\_transacciones".
+\item Crear tres registros en la tabla.
+\item Abrir dos sesiones con el mismo usuario.
+\item Crear una transacción en cada sesión, ambas deben actualizar el mismo registro. Observar el resultado.
+\item Crear otras dos transacciones, una debe eliminar un registro y la otra actualizarlo.
+\item Crear dos transacciones de tipo SERIALIZABLE, en una agregar un registro y en la otra eliminar un registro  (diferentes).
+\item Crear dos transacciones de tipo REPEATABLE READ, en ambas eliminar diferentes registros.
+\item Crear dos transacciones, una de tipo REPEATABLE READ y la otra con el nivel por defecto. La primera debe leer una tabla y la segunda debe insertar registro en esa tabla.
+\end{enumerate}
+

@@ -1,0 +1,194 @@
+%pg pool II
+
+
+Cuando se trabaja con PostgreSQL, y cualquier gestor de bases de datos, una de sus limitaciones es el sobrecosto que se paga al ejecutar incluso la más pequeña consulta. El sobrecosto se acepta sin problemas si se está llevando a cabo un complejo JOIN, pero si solo se efectua una lectura simple, el sobrecosto de abrir una conexión a la base de datos y esperar a que se ejecute la consulta puede ser muy alto.\\
+
+\section{El pool de conexiones}
+
+La razón principal para utilizar un pool de conexiones es que se deben tener suficientes conexiones para utilizar todos los recursos disponibles pero no más que eso. La cantidad de conexiones depende de los núcleos en el sistema, cuanto de la base de datos está en memoria y la velocidad de los discos. Una vez que el servidor ya está activo continuamente, toda conexión nueva solo degrada su eficiencia.\\
+
+Existen algunas reglas prácticas para decidir si se tienen muchas conexiones. En una instalación de *nix, el punto en que agregar nuevas conexiones se vuelve oneroso está entre las 500 y 1000 activas. En general tener menos conexiones abiertas es mejor, pero no se recomienda utilizar un pool de conexiones hasta que el servidor este sobrecargado de trabajo. \cite{GregorySmith2010}\\
+
+En los sistemas Windows, el límite es menor. Al ejecutar PostgreSQL como servicio, se le asignan 512KB para trabajar, por lo que si cada conexión toma 3.5KB de espacio no se pueden tener más de 125. Para más información al respecto se puede ver en:\\
+
+http://wiki.postgresql.org/wiki/Running\_\%26\_Installing\_PostgreSQL\_On\_Native\_Windows.\\
+
+Realizar pooling de conexiones va a ayudar si se tienen cientos o más conexiones y los procesadores están siendo utilizados en un elevado porcentaje.
+
+\section{PgBouncer}
+
+Originado como parte de Skype, PgBouncer es el software para pooling con el mayor rendimiento disponible. Se ejecuta como un solo proceso, no abriendo un proceso por cada conexión.\\
+
+Al monitorear las conexiones, despliega la información mediante una interfaz de base de datos a la que se le pueden aplicar consultas, sirviendo para proveer información y de consola de control. Al conectarse mediante \textit{psql} al puerto donde se ejecuta PgBouncer, se puede utilizar el comando \textit{SHOW} para mostrar información sobre el estado interno del pool de conexiones.\\
+
+PgBouncer se puede conectar con múltiples bases de datos, ya sea en el mismo host o en diferentes, lo que permite una forma de particionar para escalar. Se mueve cada base de datos a su propio host y se les une mediante PgBouncer como intermediario y la aplicación no necesitará ser cambiada.
+
+\subsection{Instalación de PgBouncer}
+
+Para instalar PgBouncer en Ubuntu, ejecutar:\\
+
+\emph{\$ sudo apt-get install pgbouncer}\\
+
+\subsection{Configurar PgBouncer}
+
+Para conectarse a una base de datos a través de PgBouncer se necesitan dos archivos de configuración ubicados en \textit{/etc/pgbouncer}, uno donde se establecen los parámetros de configuración y conexión y otro donde se definen los usuarios de la base de datos que podrán utilizar PgBouncer. El primero es \textit{pgbouncer.ini} y el segundo \textit{userlist.txt}:\\
+
+En \textit{pgbouncer.ini} se escribirá la siguiente configuración:\\
+
+\begin{pyglist}
+[databases]
+template1 = host=127.0.0.1 port=5432 dbname=template1
+Bd_prueba = host=127.0.0.1 port=5432 dbname=Bd_prueba
+
+[pgbouncer]
+listen_port = 6543
+listen_addr = 127.0.0.1
+auth_type = md5
+auth_file = userlist.txt
+logfile = pgbouncer.log
+pidfile = pgbouncer.pid
+admin_users = user
+\end{pyglist}
+
+En \textit{pgbouncer.ini} ``user'' es el usuario que va administrar pgbouncer. Se agregan además los usuarios de la base de datos. Para agregar más bases de datos solo se deben de agregar en la sección \emph{[databases]}.\\
+
+Y en \textit{userlist.txt}:\\
+
+\begin{pyglist}
+"user" "password"
+\end{pyglist}
+
+Para iniciar PgBouncer ejecutar el comando:\\
+
+\emph{pgbouncer -d pgbouncer.ini} \\
+
+Para conectarse a una base de datos a travéz de PgBouncer escribir:\\
+
+\emph{psql -p 6543 -h localhost -U user-base-datos template1}\\
+
+Para conectarse a PgBouncer escribir:\\
+
+\emph{psql -p 6543 -h localhost -U user pgbouncer}\\
+
+Al conectarse a PgBouncer, mediante SHOW HELP se pueden mostrar los comandos existentes:\\
+
+
+\begin{pyglist}
+SHOW HELP;
+
+NOTICE:  Console usage
+DETALLE:  
+	SHOW HELP|CONFIG|DATABASES|POOLS|CLIENTS|SERVERS|VERSION
+	SHOW STATS|FDS|SOCKETS|ACTIVE_SOCKETS|LISTS|MEM
+	SHOW DNS_HOSTS|DNS_ZONES
+	SET key = arg
+	RELOAD
+	PAUSE [<db>]
+	RESUME [<db>]
+	KILL <db>
+	SUSPEND
+	SHUTDOWN
+SHOW
+\end{pyglist}
+
+Si se hacen cambios en \textit{pgbouncer.ini} y se desea recargar el archivo de configuración:\\
+
+\begin{pyglist}
+RELOAD;
+\end{pyglist}
+
+\section{PgPool II}
+
+Es el más antiguo de los paquetes utilizados para pooling de conexiones con PostgreSQL que aún sigue en desarrollo. Su función principal no es solo el pooling de conexiones, además provee balanceo de carga y capacidades de replicación. Además soporta algunas configuraciones para consultas en paralelo, donde las consultas son partidas en pedazos y repartidas entre los nodos donde cada una tiene una copia de la información solicitada. El ``pool'' en pgpool es sobre todo para gestionar múltiples servidores, y pgpool sirve como proxy entre el cliente y cierto número de bases de datos.\\
+
+PgPool tiene algunas limitaciones en el pooling de conexiones. Cada conexión es establecida en su propio proceso como en el servidor. El sobrecosto de memoria de esa aproximación, con cada proceso utilizando una porción de memoria, puede ser significativa. Además, en pgpool una vez se sobrepasa la cantidad de conexiones que maneja el software, las adicionales son encoladas en el sistema operativo, con cada conexión esperando para que su conexión de red sea aceptada. 
+
+\subsection{Instalar PgPool II}
+
+Para instalar PgPool II en Ubuntu ejecutar:\\
+
+\emph{sudo apt-get install pgpool2}\\
+
+\subsection{Configuración de PgPool II}
+
+Para configurar el origen de conexiones a PgPool, se abre el archivo \textit{pgpool.conf} y se da el valor '*' al parámetro \textit{listen\_adresses}.\\
+
+\textit{listen\_adresses = '*'}\\
+
+Para configurar los usuarios que pueden acceder a la interfaz de administración se configura el archivo \textit{pcp.conf} agregando el usuario y su password en md5.\\
+
+Para generar un password en md5 utilizamos el comando pg\_md5 y el password que deseamos cifrar:\\
+
+\emph{pg\_md5 123456}\\
+
+El resultado lo incluimos en \textit{pcp.conf}:\\
+
+\emph{admin:e10adc3949ba59abbe56e057f20f883e} \\
+
+\subsection{Preparar los nodos de bases de datos}
+
+Se deben establecer los servidores PostgreSQL para PgPool. Estos servidores pueden estar en el mismo host donde se encuentra PgPool o en otro host.\\
+
+En el ejemplo el servidor estará presente en el mismo host que PgPool. Para configurar se accede al archivo \textit{pgpool.conf} y se escriben los siguientes parámetros:\\
+
+\emph{backend\_hostname0 = 'localhost'\\
+backend\_port0 = 5432\\
+backend\_weight0 = 1\\}
+
+El parámetro \emph{backend\_weight0} indica que se está ejecutando un solo servidor sin balanceo de carga.\\
+
+Si se desean más servidores, se agrega más parámetros cambiando el número para reflejar el número del servidor.\\
+
+\subsection{Activar PgPool II}
+
+Para activar pgpool-II, se utiliza el comando:\\
+
+\emph{pgpool -n -d $>$ /tmp/pgpool.log 2$>$\&1 \&}\\
+
+Esta instrucción genera un log en \textit{/tmp/pgpool.log} y se ejecuta en segundo plano.\\
+
+Para terminar el proceso se ejecuta:\\
+
+\emph{pgpool stop}\\
+
+Si hay clientes conectados y se desea desactivar el servicio a la fuerza:\\
+
+\emph{pgpool -m fast stop}\\
+
+\subsection{Conectarse a PgPool II}
+
+El puerto por defecto figura en el archivo \textit{pgpool.conf}, en el caso del presente ejemplo es 5433.\\
+
+Antes de ejecutarlo se debe cerrar cualquier programa que este editando un archivo de configuración de PgPool. Para saber si PgPool está activo y aceptando conexiones ejecutar:\\
+
+\emph{ps -ef $|$ grep pgpool}\\
+
+\emph{root      6586  3013  0 20:35 pts/1    00:00:00 sudo pgpool -n -d\\
+root      6587  6586  0 20:35 pts/1    00:00:00 pgpool -n -d\\
+root      6588  6587  0 20:35 pts/1    00:00:00 pgpool: wait for connection request\\
+root      6589  6587  0 20:35 pts/1    00:00:00 pgpool: wait for connection request\\
+root      6590  6587  0 20:35 pts/1    00:00:00 pgpool: wait for connection request\\
+root      6591  6587  0 20:35 pts/1    00:00:00 pgpool: wait for connection request\\
+root      6592  6587  0 20:35 pts/1    00:00:00 pgpool: wait for connection request\\
+root      6593  6587  0 20:35 pts/1    00:00:00 pgpool: wait for connection request\\
+root      6594  6587  0 20:35 pts/1    00:00:00 pgpool: wait for connection request\\
+root      6595  6587  0 20:35 pts/1    00:00:00 pgpool: wait for connection request\\}
+
+Si todo está conforme se ejecuta psql para conectarse a PgPool:\\
+
+\emph{psql -p 5433 -h localhost -U pedro -d Bd\_prueba}\\
+
+Una vez en la base de datos, además de los comandos SQL habituales, se pueden ver datos propios de PgPool como:\\
+
+\textbf{pool\_status}, to get the configuration\\
+\textbf{pool\_nodes}, to get the nodes information\\
+\textbf{pool\_processes}, to get information on pgPool-II processes\\
+\textbf{pool\_pools}, to get information on pgPool-II pools\\
+\textbf{pool\_version}, to get the pgPool-II release version\\
+ 
+
+
+
+
+
+

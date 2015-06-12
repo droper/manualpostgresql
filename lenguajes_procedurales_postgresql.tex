@@ -1,0 +1,520 @@
+Como en otras bases de datos, se pueden juntar expresiones SQL y volverlas una unidad. tiene diferentes nombres según el motor utilizado: procedimientos almacenados, módulos, macros, etc. En PostgreSQL se llaman funciones y además de permitir juntar varias expresiones SQL, permiten también utilizar lógica para dirigir el flujo del programa.\\
+
+En PostgreSQL existen diversos lenguajes que se pueden utilizar para escribir funciones y que con frecuencia vienen ya empaquetados: SQL, C, PL/pgSQL, PL/Perl, PL/Python. Se pueden instalar además otrs lenguajes como R, Java, sh e incluso algunos experimentales como Scheme. Para ver una lista de los lenguajes disponibles acceder a:\\
+
+http://www.postgresql.org/docs/current/interactive/external-pl.html\\
+
+\section{Estructura de una función }
+
+Sin importar que lenguaje se escoge para escribir una función, todas comparten una misma estructura:\\
+
+\begin{pyglist}
+CREATE OR REPLACE FUNCTION func_name(
+     arg1 arg1_datatype)
+RETURNS some_type | setof sometype | TABLE (..) AS
+$$
+BODY of function
+$$
+LANGUAGE language_of_function
+\end{pyglist}
+
+Para listar la lista de lenguajes en la base de datos se ejecuta:\\
+
+\begin{pyglist}
+SELECT lanname FROM pg_language;
+\end{pyglist}
+
+La definición de una función puede incluir atributos adicionales para optimizar la ejecución y mejorar la seguridad:\\
+
+\begin{itemize}
+\item LANGUAGE: Debe ser uno instalado en la base de datos.
+\item VOLATILITY: Por defecto es VOLATILE si no es especificado. Puede ser establecido como STABLE, VOLATILE o IMMUTABLE. Estas configuraciones le dan una idea al planificador sobre si los resultados de la función pueden ser colocados en la cache. STABLE significa que la función va a retornar el mismo valor para la misma entrada y la misma consulta. VOLATILE significa que la función puede retornar un valor diferente con cada llamada del sistema. INMUTABLE significa que dada una entrada, la salida siempre va a ser la misma.
+\item STRICT: Una función es asumida como no estricta a menos que tenga el atributo STRICT. Una función STRICT siempre retorna NULL si alguna entrada es NULL. 
+\item COST: Es una medida relativa de la intensidad de computo. Las funciones SQL y PL/PgSQL tienen un valor por defecto de 100 y las de C de 1. Amayor el valor, se asume que la función es más costosa.
+\item ROWS: Es un estimado de cuantos registros va a devolver la función. El formato es ROWS 100.
+\item SECURITY DEFINER: Cláusula opcional que implica que la función se ejecuta en el contexto del dueño dela función. Si no se coloca, la función se ejecuta en el contexto del usuario actual.
+\end{itemize}
+
+\section{Funciones SQL}
+
+Escribir funciones en SQL es sencillo. Se agrega la estructura y se tiene la función. Debido a que no es un lenguaje propiamente dicho, en SQL no hay estructuras de control. No puede haber más de una sentencia SQL (se pueden utilizar sub consultas).\\
+
+Ejemplo:\\
+
+\begin{pyglist}
+CREATE OR REPLACE FUNCTION ins_logs(param_user_name varchar, param_description text)
+  RETURNS integer AS
+$$ INSERT INTO logs(user_name, description) VALUES($1, $2)
+RETURNING log_id; $$
+LANGUAGE 'sql' VOLATILE;
+\end{pyglist}
+
+Para llamar a la función se ejecuta:\\
+
+\begin{pyglist}
+SELECT ins_logs('lhsu', 'this is a test') As new_id;
+\end{pyglist}
+
+Para retornar conjuntos de registros existes tres alternativas: RETURNS TABLE, usar parámetros OUT, o retornar un tipo de datos compuesto. \cite{Obe2012}\\
+
+Ejemplo de RETURNS TABLE:\\
+
+\begin{pyglist}
+CREATE FUNCTION sel_logs_rt(param_user_name varchar)
+RETURNS TABLE (log_id int, user_name varchar(50), description text, log_ts timestamptz) AS
+$$
+SELECT log_id, user_name, description, log_ts FROM logs WHERE user_name = $1;
+$$
+LANGUAGE 'sql' STABLE;
+\end{pyglist}
+
+Utilizando parámetros OUT:\\
+
+\begin{pyglist}
+CREATE FUNCTION sel_logs_out(param_user_name varchar, OUT log_id int
+ , OUT user_name varchar, OUT description text, OUT log_ts timestamptz)
+RETURNS SETOF record AS
+$$
+SELECT * FROM logs WHERE user_name = $1;
+$$
+LANGUAGE 'sql' STABLE;
+\end{pyglist}
+
+Usando un tipo de dato compuesto:\\
+
+\begin{pyglist}
+CREATE FUNCTION sel_logs_so(param_user_name varchar)
+RETURNS SETOF logs AS
+$$
+SELECT * FROM logs WHERE user_name = $1;
+$$
+LANGUAGE 'sql' STABLE;
+\end{pyglist}
+
+
+
+Todas las funciones pueden ser llamadas usando:\\
+
+\begin{pyglist}
+SELECT * FROM sel_logs_rt('lhsu');
+\end{pyglist}
+
+\section{Funciones PL/pgSQL}
+
+Cuando las necesidades escapan de los límites del SQL puro, la opción más común es PL/pgSQL. Se diferencia de SQL en que se pueden declarar variables utilizando DECLARE, existen instrucciones de control de flujo y el cuerpo de la función debe de estar entre BEGIN y END.\\
+
+Ejemplo:\\
+
+\begin{pyglist}
+CREATE FUNCTION sel_logs_rt(param_user_name varchar)
+RETURNS TABLE (log_id int, user_name varchar(50), description text,
+               log_ts timestamptz) AS
+$$
+BEGIN
+    RETURN QUERY
+    SELECT log_id, user_name, description, log_ts
+      FROM logs WHERE user_name = param_user_name;
+END;
+$$
+LANGUAGE 'plpgsql' STABLE;
+\end{pyglist}
+
+
+
+
+\section{Funciones en PL/Python}
+
+Python es un lenguaje popular con gran cantidad de librerías. En PostgreSQL se pueden escribir funciones utilizando Python. Están soportadas tanto Python 2 como Python 3.\\
+
+Para utilizar Python, se debe instalar el paquete de software que contiene la extensión. en Ubuntu:\\
+
+\emph{sudo apt-get install postgresql-plpython-9.2}\\
+
+Luego se ingresa en la base de datos y se instala la extensión:\\
+
+\begin{pyglist}
+CREATE EXTENSION plpython2u;
+\end{pyglist}
+
+\subsection{Función python básica}
+
+PostgreSQL convierte automáticamente los tipos de PostgreSQL a tipos de dato Python y viceversa. Desde Pl/Pyton se pueden retornar arreglos e incluso tipos de datos compuestos. Se puede utilizar python para escribir Triggers y crear funciones de agregación.\\
+
+Pl/Python es un lenguaje ``untrusted'' debido a que puede interactuar con el sistema operativo y por lo tanto una función solo puede ser creada por un superusuario. Un usuario puede escribir funciones en PL/Python si es que al crearse se le dio el atributo SECURITY DEFINER. Los lenguajes ``untrusted'' se reconocen debido a que llevan una ``u'' al final de su nombre.\\
+
+Python permite llevar a cabo tareas que no son factible en SQL o PL/pgSQL. En el siguiente ejemplo se muestra como hacer una función que haga una búsqueda de texto en la web de documentación de PostgreSQL.\\
+
+\begin{pyglist}
+CREATE OR REPLACE FUNCTION postgresql_help_search(param_search text)
+RETURNS text AS
+$$
+import urllib, re
+response = urllib.urlopen \ 
+('http://www.postgresql.org/search/?u=%2Fdocs%2Fcurrent%2F&q='+param_search)
+raw_html = response.read()
+result = raw_html[raw_html.find("<!-- docbot goes here -->"):raw_html.find("<!-- \
+pgContentWrap -->") - 1]
+result = re.sub('<[^<]+?>', '', result).strip()
+return result
+$$
+LANGUAGE plpython2u SECURITY DEFINER STABLE;
+\end{pyglist}
+
+Lo que hace la función es:\\
+
+\begin{enumerate}
+\item Importar las librerías a utilizar.
+\item Concatenar el término de búsqueda con la dirección web.
+\item Leer la respuesta y guardarla en una variable llamada raw\_html.
+\item Guardar la parte de raw\_html que empieza con $<$!-- docbot goes here --$>$ y termina antes de $<$!-- pgContentWrap --$>$.
+\item Elimina los tags HTML y los espacios en blanco al inicio y final y guarda en result.
+\item Retorna el resultado final result.
+\end{enumerate}
+
+Llamar a una función Python no es diferente que llamar a funciones en otros lenguajes:\\
+
+\begin{pyglist}
+SELECT search_term, left(postgresql_help_search(search_term), 125) 
+As result FROM (VALUES
+('regexp_match'), ('pg_trgm'), ('tsvector')) As X(search_term);
+\end{pyglist}
+
+Otro ejemplo permitirá interactuar con el sistema operativo:\\
+
+\begin{pyglist}
+CREATE OR REPLACE FUNCTION list_incoming_files()
+RETURNS SETOF text AS
+$$
+import os
+return os.listdir('/tmp')
+$$
+LANGUAGE 'plpython2u' VOLATILE SECURITY DEFINER;
+\end{pyglist}
+
+
+Para ejecutarlo:\\
+
+\begin{pyglist}
+SELECT * FROM list_incoming_files();
+\end{pyglist}
+
+Ejemplo de acceso a data desde plpython mediante la librería plpy.\\
+
+\begin{pyglist}[language=python]
+CREATE FUNCTION try_adding_joe() RETURNS text AS $$
+    try:
+        plpy.execute("INSERT INTO users(username) VALUES ('joe')")
+    except plpy.SPIError:
+        return "something went wrong"
+    else:
+        return "Joe added"
+$$ LANGUAGE plpythonu;
+\end{pyglist}
+
+\begin{pyglist}[language=python]
+CREATE FUNCTION count_odd_fetch(batch_size integer) RETURNS integer AS $$
+odd = 0
+cursor = plpy.cursor("SELECT num FROM largetable")
+while True:
+    rows = cursor.fetch(batch_size)
+    if not rows:
+        break
+    for row in rows:
+        if row['num'] % 2:
+            odd += 1
+return odd
+$$ LANGUAGE plpythonu;
+\end{pyglist}
+
+
+
+\subsection{Aspectos básicos de Python}
+
+Python es un lenguaje de programación interpretado, dinámico y multiparadigma (POO, estructurado). Se caracteriza por tener una baja curva de aprendizaje, ser multiuso y permitir una programación ordenada y elegante.\\
+
+Su visión está expresada en el Zen de Python:\\
+
+\begin{quotation}
+Bello es mejor que feo.\\
+Explícito es mejor que implícito.\\
+Simple es mejor que complejo.\\
+\end{quotation}
+
+Python se ha utilizado para todo tipo de desarrollos incluyendo Web, aplicaciones de escritorio, sistemas de información, utilitarios, etc.\\
+
+
+
+\subsection{Ejemplo de Python}
+
+\begin{pyglist}[language=python]
+import smtplib
+from email.MIMEText import MIMEText
+
+fromaddr = 'pmunoz@gmail.com'
+toaddrs  = 'pedro@simuder.com'
+msg = 'Hola, este es un mensaje de prueba'
+
+message = MIMEText(msg)
+message['From'] = 'Example <' + fromaddr  + '>'
+message['To'] = toaddrs
+message['MIME-Version'] = '1.0'
+message['Content-type'] = 'text/HTML'
+message['Subject'] = 'Asunto'
+
+# Credentials (if needed)  
+usuario = 'usuario'
+password = 'password'
+
+# The actual mail send  
+server = smtplib.SMTP('smtp.gmail.com:587')
+server.starttls()
+server.login(usuario,password)
+server.sendmail(fromaddr, toaddrs, message.as_string())
+server.quit()
+\end{pyglist}
+
+
+Para empezar a experimentar con Python se puede utilizar el intérprete interactivo desde la consola:\\
+
+\emph{python}\\
+
+
+\subsection{Tipos básicos}
+
+Los tipos básicos son en esencia tres: números, cadenas y valores booleanos.
+
+\begin{itemize}
+\item Números: 5 (entero), 4.7 (flotante), 4 + 6j (complejo).
+\item Cadenas: "Gobierno regional".
+\item Booleanos: True y False
+\end{itemize}
+
+Los comentarios se escriben utilizando el símbolo \#:\\
+
+\begin{pyglist} [language=python]
+\# Este es un comentario
+a = "Esta es una linea de programa"
+\end{pyglist}
+
+Las variables se asignan de forma dinámica y dependen del tipo de dato que se les asigna, por ejemplo, una variable puede ser entera, luego asignarsele un valor de coma flotante y por último una cadena y es válido:\\
+
+\begin{pyglist} [language=python]
+>>> a = 5
+>>> a
+5
+>>> a = 6.4
+>>> a
+6.4
+>>> a = "Chiclayo"
+>>> a
+'Chiclayo'
+>>> 
+\end{pyglist}
+
+\subsubsection{Cadenas}
+
+Existen tres tipo de cadenas: Las cadenas normales, las cadenas unicode y las cadenas ``crudas'' (raw en inglés).\\
+
+$>>>$ a = ``ñ''  \\
+$>>>$ print ``a''   \\
+ñ               \\
+$>>>$ b =``ñ''   \\
+$>>>$ print b   \\
+ñ               \\
+$>>>$ a         \\
+u'$\backslash$xf1'   \\
+$>>>$ b              \\
+'$\backslash$xc3$\backslash$xb1'  \\
+$>>>$ c = r``$\backslash$n''        \\
+$>>>$ c                           \\
+'$\backslash$$\backslash$n'       \\
+$>>>$ print c                     \\ 
+$\backslash$n                     \\
+$>>>$                             \\
+
+
+\subsection{Operadores}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|c|c|c|} \hline
+Operador	             & Descripción & Ejemplo     \\ \hline
++         & Suma               & r = 3 + 2    \# r es 5   \\ \hline
+-         & Resta              & r = 4 - 7    \# r es -3   \\ \hline
+-         & Negación           & r = -7       \# r es -7   \\ \hline     
+*         & Multiplicación     & r = 2 * 6    \# r es 12   \\ \hline
+**        & Exponente          & r = 2 ** 6   \# r es 64    \\ \hline
+/         & División           & r = 3.5 / 2  \# r es 1.75    \\ \hline
+//        & División entera    & r = 3.5 // 2 \# r es 1.0    \\ \hline
+\%         & Módulo             & r = 7\ % 2    \# r es 1   \\ \hline
+\end{tabular}
+\end{table}
+
+Si en una operación utilizamos un número flotante y un entero el resultado será flotante.\\
+
+\subsection{Colecciones}
+
+Los tipos de colecciones de datos más utilizados en Python son: listas, tuplas y diccionarios.\\
+
+\subsubsection{Listas}
+
+Las listas son el caballo de batalla de Python. Son colecciones de datoa que pueden tener cualquier tipo de dato: números, cadenas, otras listas, objetos, etc.\\
+
+Para crear una lista se agrupan los objetos en corchetes separados por comas:\\
+
+\begin{pyglist}[language=python]
+>>> l = [22, True, "una lista", [1, 2]]
+>>> l[2]
+'una lista'
+>>> l[3][0]
+1
+>>> l[1] = 15
+>>> l
+[22, 15, 'una lista', [1, 2]]
+>>> 
+>>> l[0:2]
+[22, 15]
+>>> l[:2]
+[22, 15]
+>>> l.append("mee")
+>>> l
+[22, 15, 'una lista', [1, 2], 'mee']
+\end{pyglist}
+
+\subsubsection{Tuplas}
+
+Las tuplas se parecen a las listas, excepto por dos puntos: Se definen de forma diferente y son inmutables.\\
+
+\begin{pyglist}[language=python]
+>>> tupla = (1,5,"Hola", True, "Hotel")
+>>> tupla[0]
+1
+>>> tupla[0:2]
+(1, 5)
+>>> t = (1)
+>>> type(t)
+<type 'int'>
+>>> t = (1,)
+>>> type(t)
+<type 'tuple'>
+\end{pyglist}
+
+A cambio de no ser modificables, las tuplas son más ligeras en memoria.
+
+\subsubsection{Diccionarios}
+
+Son colecciones que relacionan una llave y un valor. El primer valor es la clave y el segundo el valor asociado a la clave. Como clave se puede utilizar cualquier valor inmutable: números, cadenas, booleanos, tuplas. A un diccionario se accede solo por la llave, ya que no tienen orden interno.\\
+
+\begin{pyglist}[language=python]
+>>> d = {"Don Corleone": "Marlon Brando", "Michel Corleone": "Al Pacino"}
+>>> d
+{'Michel Corleone': 'Al Pacino', 'Don Corleone': 'Marlon Brando'}
+>>> d["Don Corleone"]
+'Marlon Brando'
+\end{pyglist}
+
+\subsection{Control de flujo}
+
+El control de flujo son los condicionales y bucles:\\
+
+\begin{pyglist}
+x = 10
+y = 50
+
+if x > 10 and y > 60:
+    print "x mayor que 10 e y mayor que 60"
+elif x > 5 and y < 100:
+    print "x mayor que 5 e y menor que 100"
+else:
+    print "ninguna de las anteriores"
+\end{pyglist}
+
+En Python no existe el \textbf{switch}.\\
+
+\begin{pyglist}
+i = 0
+
+while i < 20:
+    print str(i) + " es menos de 20"
+    i = i + 1
+\end{pyglist}
+
+
+En Python, el bucle \textbf{for ... in} se utiliza como una forma genérica de iterar sobre una secuencia.\\
+
+\begin{pyglist}
+x = 5
+for j in range(x):
+    print "a " + str(j) + " le faltan " + str(x - j) + " para alcanzar a " + str(x)
+    
+l = [4, "Segundo", "Chiclayo", False, 6.8]
+
+for item in l:
+    print item
+\end{pyglist}
+
+\subsection{Funciones}
+
+Una función es un fragmento de código con un nombre asociado que realiza una serie de tareas y devuelve un valor.\\
+
+\begin{pyglist}
+def primera_funcion(param1, param2):
+
+    suma = param1 + param2
+    return suma
+
+print primera_funcion(5,4)
+print "\n"
+print primera_funcion("Ho","la")
+
+def varios(param1, param2, *otros):
+    """Funcion con numero variable de parametros:W
+    """
+    print param1
+    print param2
+    for val in otros:
+        print val
+
+varios(1,2)
+varios(1,2,3,4)
+varios(1,2,3,4,5)
+\end{pyglist}
+
+
+\subsection{Funciones Trigger}
+
+PostgreSQL ofrece Triggers a nivel de registro y de tablas y vistas. PostgreSQL ofrece funciones especializadas en gestionar los triggers que actuan como cualquier otra función y tienen la misma estructura básica. Donde difieren es en el parámetro de entrada y en la salida. \\
+
+Una función trigger nunca recibe un input aunque internamente tiene acceso a la data del trigger y puede modificarla. Su salida siempre es un tipo llamado \textbf{trigger}. Cada trigger debe tener asociada unafunción trigger y para tener múltiples triggers se deben crear múltiples funciones sobre el mismo evento las cuales se ejecutaran en orden alfabético. \\
+
+Se puede usar cualquier lenguaje menos SQL para escribir triggers. El más utilizado es PL/pgSQL. Se siguen dos pasos: en primer lugar escribir la función y luego el trigger correspondiente. \\
+
+Por ejemplo:\\
+
+\begin{pyglist}
+CREATE OR REPLACE FUNCTION orders_2004_01_update_trigger()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF ( NEW.orderdate != OLD.orderdate ) THEN
+      DELETE FROM orders_2004_01
+        WHERE OLD.orderid=orderid;
+      INSERT INTO orders values(NEW.*);
+    END IF;
+    RETURN NULL;
+END;
+$$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER update_orders_2004_01
+    BEFORE UPDATE ON orders_2004_01
+    FOR EACH ROW
+    EXECUTE PROCEDURE orders_2004_01_update_trigger();
+\end{pyglist}
+
+\begin{itemize}
+\item Lo primero que se hace es definir la función trigger que elimina un valor antiguo e inserta el valor nuevo del registro.
+\item El trigger se ejecutará antes de que se actualize un registro de la tabla \textit{orders\_2004\_01}.
+\end{itemize}
+
+
+

@@ -1,0 +1,348 @@
+Al crecer una base de datos, es común que alguna tabla se convierta en inmanejable por su tamaño. Si la tabla es más grande que la memoria del sistema el tiempo de consultas puede hacerse cada vez mayor. Una forma de lidiar con grandes tablas es particionarlas, dividiéndolas en tablas más pequeñas y manejables. Para llevar a cabo esta tarea, no se necesita cambiar la aplicación debido a que Postgresql se hace cargo de gestionar las tablas.
+
+\section{Particionado}
+
+Para saber cuando particionar una tabla, los criterios que se consideran como buenas prácticas son hacerlo cuando la tabla sea más grande que la memoria física o cuando alcance unos 100 millones de registros.\\
+
+Por ejemplo, considerando la tabla \textit{orders} de la base de datos \textit{dellstore2}:\\
+
+\begin{pyglist}
+\d orders;
+
+ orderid     | integer       | not null valor por omision 
+                               nextval('orders_orderid_seq'::regclass)
+ orderdate   | date          | not null
+ customerid  | integer       | 
+ netamount   | numeric(12,2) | not null
+ tax         | numeric(12,2) | not null
+ totalamount | numeric(12,2) | not null
+\end{pyglist}
+
+Si después de años de trabajo la tienda ha recibido tantas órdenes que las consultas a la tabla se hacen muy lentas, hay dos potenciales maneras de partir la data en partes más pequeñas. La primera sería partir la tabla de acuerdo a su id (\textit{orderid}). Otra forma es partirlo por fechas (\textit{orderdata}).\\
+
+La diferencia entre ambos es que al partirlo por \textit{orderid} si se eliminan los antiguos pedidos de la base de datos, dejaría una gran cantidad de registros para ser limpiados lo que haría más lenta la base de datos. En cambio, si se utilizan fecha para partir la data, al querer eliminar data antigua, simplemente se borran las particiones que la contienen y el rendimiento de la base de datos no sufre.\\
+
+Otro criterio importante al partir una tabla es que para beneficiarse de partir una tabla en pedazos, las consultas deben realizarse  sobre un subconjunto útil de la data. Se deben tomar en cuentas los  campos utilizados en la clausula WHERE como elementos para tomar la decisión de que campo utilizar para dividir la tabla.
+
+\section{Métodos de Particionado}
+
+\subsection{Configuración de Particionado}
+
+Un útil paso inicial antes de efectuar la partición es obtener el rango de datos que contiene la tabla en relación al campo por el que se desea particionar y su tamaño.\\
+
+\begin{pyglist}
+SELECT min(orderdate),max(orderdate) FROM orders;
+
+2004-01-01 | 2004-12-31
+
+SELECT relname,relpages FROM pg_class WHERE relname LIKE 'orders%' 
+ORDER BY relname;
+
+ orders             |       94
+ orders_orderid_seq |        1
+ orders_pkey        |       29
+
+\end{pyglist}
+
+\section{Crear las particiones}
+
+Particionar en PostgreSQL se basa en las capacides de herencia de la tabla. Esto permite a una tabla tener hijos que hereden sus columnas. En este ejemplo se partirá la tabla \textit{orders} en una partición por mes.\\
+
+\begin{pyglist}
+CREATE TABLE orders_2004_01 (
+CHECK ( orderdate >= DATE '2004-01-01' and orderdate < DATE '2004-02-01')
+) INHERITS (orders);
+
+...
+...
+
+CREATE TABLE orders_2004_12 (
+CHECK ( orderdate >= DATE '2004-12-01' and orderdate < DATE '2005-01-01')
+) INHERITS (orders);
+\end{pyglist}
+
+Pero solo se hereda la estructura de columnas de la tabla, para agregar índices, restricciones y ajustar permisos se debe de hacer de forma manual:\\
+
+\begin{pyglist}
+ALTER TABLE ONLY orders_2004_01
+ADD CONSTRAINT orders_2004_01_pkey PRIMARY KEY (orderid);
+...
+ALTER TABLE ONLY orders_2004_12
+ADD CONSTRAINT orders_2004_12_pkey PRIMARY KEY (orderid);
+\end{pyglist}
+
+SQLs que van a crear un índice en \textit{orderid}.\\
+
+Además un índice manual en \textit{customerid} es necesario:\\
+
+\begin{pyglist}
+CREATE INDEX ix_orders_2004_01_custid ON orders_2004_01 USING btree (customerid);
+
+...
+...
+
+CREATE INDEX ix_orders_2004_12_custid ON orders_2004_12 USING btree (customerid);
+\end{pyglist}
+
+Cada orden contiene una restricción a la llave foránea para asegurar que el cliente referenciado sea válido. Debe ser aplicada a cada partición:\\
+
+\begin{pyglist}
+ALTER TABLE ONLY orders_2004_01
+   ADD CONSTRAINT fk_2004_01_customerid FOREIGN KEY (customerid)
+REFERENCES customers(customerid) ON DELETE SET NULL;
+
+...
+...
+
+ALTER TABLE ONLY orders_2004_12
+   ADD CONSTRAINT fk_2004_12_customerid FOREIGN KEY (customerid)
+REFERENCES customers(customerid) ON DELETE SET NULL;
+\end{pyglist}
+
+\subsection{Redirigir los INSERT a las particiones}
+
+Luego de tener la estructura lista, el siguiente paso es hacer que los registros insertados en la tabla padre vayan a la partición apropiada. La forma recomendada de hacerlo es con un trigger.\\
+
+\begin{pyglist}
+CREATE OR REPLACE FUNCTION orders_insert_trigger()
+RETURNS TRIGGER AS $$
+BEGIN
+IF      (NEW.orderdate >= DATE '2004-12-01' AND
+       NEW.orderdate < DATE '2005-01-01' ) THEN
+      INSERT INTO orders_2004_12 VALUES (NEW.*); 
+      
+ELSIF  ( NEW.orderdate >= DATE '2004-11-01' AND
+    NEW.orderdate < DATE '2004-12-01' ) THEN
+    INSERT INTO orders_2004_11 VALUES (NEW.*);
+    
+...
+
+ELSIF ( NEW.orderdate >= DATE '2004-01-01' AND    
+     NEW.orderdate < DATE '2004-02-01' ) THEN
+     INSERT INTO orders_2004_01 VALUES (NEW.*);
+ELSE
+    RAISE EXCEPTION 'Error in orders_insert_trigger(): date out of range';
+END IF;
+
+RETURN NULL;
+END;
+$$
+LANGUAGE plpgsql;           
+\end{pyglist}
+
+Para hacerla más corta solo se utilizará la correspondiente a Enero,pero es una práctica recomendada empezar la función en el fin del rango (Diciembre), debido a que en escenarios de negocios, lo más probable es que se inserte data al final del rango:\\
+
+\begin{pyglist}
+CREATE OR REPLACE FUNCTION orders_insert_trigger()
+RETURNS TRIGGER AS $$
+BEGIN
+IF      (NEW.orderdate >= DATE '2004-02-01' AND
+       NEW.orderdate < DATE '2005-03-01' ) THEN
+      INSERT INTO orders_2004_02 VALUES (NEW.*);
+      
+ELSIF  ( NEW.orderdate >= DATE '2004-01-01' AND    
+     NEW.orderdate < DATE '2004-02-01' ) THEN
+     INSERT INTO orders_2004_01 VALUES (NEW.*);
+ELSE
+    RAISE EXCEPTION 'Error in orders_insert_trigger(): date out of range';
+END IF;
+RETURN NULL;
+END;
+$$
+LANGUAGE plpgsql;
+\end{pyglist}
+
+
+Una vez que la función ha sido creada, necesita ser llamada cada vez que un registro se inserte:\\
+
+\begin{pyglist}
+CREATE TRIGGER insert_orders_trigger
+   BEFORE INSERT ON orders
+   FOR EACH ROW EXECUTE PROCEDURE orders_insert_trigger();
+\end{pyglist}
+
+La función puede necesitar actualizarse a medida que se agregan nuevas particiones, pero el trigger utilizará la nueva función de manera automática una vez creada.\\
+
+Para probar si funciona insertamos un registro en el rango de fechas deseado:\\
+
+\begin{pyglist}
+INSERT INTO orders (orderdate, customerid, netamount, tax, totalamount)
+                    VALUES ('2004-01-31', 6765, 359.03, 29.62, 388.65);
+\end{pyglist}
+
+Y comprobamos que se haya insertado en la tabla \textit{orders\_2004\_01}.
+
+\subsection{Utilizar reglas de partición}
+
+Existe otra manera de implementar la redirección a la partición llevada a cabo mediante el trigger. Mediante una funcionalidad llamada rules (reglas) de PostgreSQL se puede substituir un comando por otro que se desee.\\
+
+Para implementar la regla, se elimina el trigger:\\
+
+\begin{pyglist}
+DROP TRIGGER insert_orders_trigger ON orders;
+\end{pyglist}
+
+Y se crea la regla:\\
+
+\begin{pyglist}
+CREATE RULE orders_2004_01_insert AS
+ON INSERT TO orders WHERE
+    ( orderdate >= DATE '2004-01-01' AND orderdate < DATE '2004-02-01' )
+DO INSTEAD
+    INSERT INTO orders_2004_01 VALUES (NEW.*);
+\end{pyglist}
+
+Y comprobamos si funciona insertando un registro.\\
+
+La ventajas de las reglas es que son más eficientes insertando grandes cantidades de registros al mismo tiempo, pero los triggers son superiores al insertar registros de uno en uno. Y debido a que las reglas son proporcionales al número de particiones, el rendimiento puede disminuir a medida que aumentan las particiones.\\
+
+En pocas palabras es mejor utilizar triggers para particionar tablas.
+
+\subsection{Trigger para los Updates}
+
+Cuando en la tabla maestra se actualizan registros, estos deben guardarse no en la tabla maestra sino en la partición correspondiente. Con este fin se instala el siguiente trigger:\\
+
+\begin{pyglist}
+CREATE OR REPLACE FUNCTION orders_2004_01_update_trigger()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF ( NEW.orderdate != OLD.orderdate ) THEN
+      DELETE FROM orders_2004_01
+        WHERE OLD.orderid=orderid;
+      INSERT INTO orders values(NEW.*);
+    END IF;
+    RETURN NULL;
+END;
+$$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER update_orders_2004_01
+    BEFORE UPDATE ON orders_2004_01
+    FOR EACH ROW
+    EXECUTE PROCEDURE orders_2004_01_update_trigger();
+\end{pyglist}
+
+
+\subsection{Migración de la data}
+
+Luego de crear las particiones, los índices y las funciones ahora se tiene toda la data en la tabla \textit{orders} y particiones vacias. Esta es la forma habitual como se llevaría a cabo la partición de la data para no interrumpir el funcionamiento de la aplicación. Otra opción es hacer un backup de la tabla, crear la estructura de las particiones y recargar la data, lo que requeriria una ventana de mantenimiento.\\
+
+Otro método es si se instala el trigger para los updates en la tabla padre, al actualizarse toda la tabla se migraría la data. Este es el código necesario:\\
+
+\begin{pyglist}
+CREATE OR REPLACE FUNCTION orders_update_trigger()
+RETURNS TRIGGER AS $$
+BEGIN
+   DELETE FROM orders WHERE OLD.orderid=orderid;
+    INSERT INTO orders values(NEW.*);
+    RETURN NULL;
+END;
+$$
+LANGUAGE plpgsql;
+
+CREATE TRIGGER update_orders
+    BEFORE UPDATE ON orders
+    FOR EACH ROW
+    EXECUTE PROCEDURE orders_update_trigger();
+\end{pyglist}
+
+Al llevar a cabo una migración, la aproximación más prudente es incluir todo en un BEGIN/COMMIT, de tal manera que si algo sale mal, nada se lleva a cabo. \\
+
+Para ejecutar la función se llama al trigger:\\
+
+\begin{pyglist}
+UPDATE orders SET orderid=orderid WHERE ORDERDATE < '2004-03-01';
+\end{pyglist}
+
+Luego se hace un count de las particiones:\\
+
+\begin{pyglist}
+SELECT count(*) FROM orders_2004_01;
+\end{pyglist}
+
+Se observa que las particiones tienen la data correspondiente pero que la tabla padre aún tiene toda la data. Para limpiar la tabla padrea se utilizará CLUSTER para reconstruirla.\\
+
+\begin{pyglist}
+CLUSTER orders USING ix_order_custid;
+\end{pyglist}
+
+Luego se eliminan el trigger y la función que realizarón la migración para evitar futuras confuciones:\\
+
+\begin{pyglist}
+DROP TRIGGER update_orders ON orders;
+DROP FUNCTION orders_update_trigger();
+\end{pyglist}
+
+Se ejecuta ANALYZE para actualizar las estadísticas de la base de datos y se verifica que \textit{constraint\_exclusion} este activa.\\
+
+\begin{pyglist}
+ANALYZE;
+SHOW constraint_exclusion;
+\end{pyglist}
+
+Constraint exclusion permite al planificador evitar incluir particiones en una consulta cuando estas no van a proveeder de registros relevantes. \\
+
+Se puede volver a ejecutar una consulta con toda la tabla y verificar las estadísticas:\\
+
+\begin{pyglist}
+EXPLAIN ANALYZE SELECT * FROM orders;
+QUERY PLAN
+----------
+Result (cost=0.00..1292.00 rows=12001 width=36) (actual
+time=4.453..102.062 rows=12000 loops=1)
+-> Append (cost=0.00..1292.00 rows=12001 width=36) (actual
+time=4.445..62.258 rows=12000 loops=1)
+      -> Seq Scan on orders (cost=0.00..400.00 rows=1 width=36)
+(actual time=4.153..4.153 rows=0 loops=1)
+      -> Seq Scan on orders_2004_01 orders (cost=0.00..77.00
+rows=1000 width=36) (actual time=0.287..1.971 rows=1000 loops=1)
+      -> Seq Scan on orders_2004_02 orders (cost=0.00..77.00
+rows=1000 width=36) (actual time=0.267..2.045 rows=1000 loops=1)
+\end{pyglist}
+
+Para probar el valor de las particiones, se puede probar con una consulta que solo consulte un día puntual:\\
+
+\begin{pyglist}
+EXPLAIN ANALYZE SELECT * FROM orders WHERE orderdate='2004-01-16';
+QUERY PLAN
+----------
+Result (cost=0.00..471.50 rows=36 width=36) (actual time=1.437..2.141
+rows=35 loops=1)
+   -> Append (cost=0.00..471.50 rows=36 width=36) (actual
+time=1.432..2.017 rows=35 loops=1)
+      -> Seq Scan on orders (cost=0.00..400.00 rows=1 width=36)
+(actual time=1.189..1.189 rows=0 loops=1)
+          Filter: (orderdate = '2004-01-16'::date)
+     -> Seq Scan on orders_2004_01 orders (cost=0.00..71.50 rows=35
+width=36) (actual time=0.238..0.718 rows=35 loops=1)
+          Filter: (orderdate = '2004-01-16'::date)
+Total runtime: 2.276 ms
+\end{pyglist}
+
+En lugar de recorrer todas las particiones, solo recorre aquella correspondiente a la fecha solicitada.
+
+\subsection{Crear nuevas particiones}
+
+Cuando sea necesario crear nuevas particiones se debe modificar el trigger y la función relacionada de tal manera que continue funcionando sin novedad el particionado.
+
+\subsection{Ventajas de las particiones}
+
+Existen diversas ventajas en usar particiones para una tabla:
+
+\begin{itemize}
+\item Las búsquedas son más veloces.
+\item Es más sencillo el mantenimiento de data histórica. Si se desea eliminar un rango de fechas del servidor de producción, se hace un backup y se eliminan las particiones con la data antigua.
+\item Al eliminar data, esta no queda ocupando espacio, es eliminada junto con la partición borrada
+\end{itemize}
+
+\subsection{Errores al particionar}
+
+Existen algunos errores comunes al particionar una tabla:
+
+\begin{itemize}
+\item No tener \textit{constraint\_exclusion} en ON.
+\item No agregar todas los constrains e índices necesarios a cada partición.
+\item No asignar los permisos necesarios a las particiones.
+\item No utlizar el campo por el que se particiono al hacer consultas.
+\item No escribir robustos el trigger o la función.
+\end{itemize}

@@ -1,0 +1,508 @@
+PostgreSQL es una gran plataforma sobre la cual desarrollar aplicaciones y soluciones empresariales, pero optimizar el rendimiento no ha sido una tarea fácil. Se necesitan adecuadas reglas empíricas para comenzar así como supervisión y mantenimiento para mantener el sistema ejecutándose sin problemas y con el rendimiento esperado. \\
+
+En general para ajustar el rendimiento de una Base de Datos en PostgreSQL se siguen los siguientes pasos:
+
+\begin{itemize}
+\item Seleccionar el hardware donde ejecutar la BD, idealmente se debe probar el hardware para estar seguro de que su rendimiento es el esperado.
+\item Configurar toda la implementación del hardware y software de disco: nivel RAID, sistema de archivos.
+\item Optimizar la configuración del Servidor.
+\item Supervisar el rendimiento del servidor y cuán bien se están ejecutando las consultas.
+\item Mejorar las consultas para que se ejecuten de forma más eficiente y agregar índices para acelerarlas.
+\item Introducir pool de conexiones y cache.
+\item Replicar la data en múltiples servidores y distribuir las lecturas entre todos.
+\item Partir grandes tablas en secciones, eventualmente, las más grandes pueden ser divididas entre varios servidores.
+\end{itemize}
+
+\section{Configuración de Hardware}
+
+Una razón importante para utilizar un gestor de código abierto como PostgreSQL es que cada dólar ahorrado en el software se puede invertir en hardware. Los tres principales componentes a considerar en el presupuesto son CPU, memoria y discos.\\
+
+\subsection{CPU}
+
+Actualmente los CPUs tienen dos o más núcleos, lo cuál lleva a los desarrolladores a preguntar dos cuestiones esenciales:
+
+\begin{enumerate}
+\item ¿Qué familia de procesadores es mejor?
+\item ¿Qué es mejor?, ¿más núcleos o núcleos más rápidos?
+\end{enumerate}
+
+En general se considera que Intel produce núcleos más rápidos y AMD provee más núcleos por dólar y sobre todo sus servidores tienen capacidad para tener mayor cantidad de núcleos que los de la competencia.\\
+
+Para saber si se requieren más núcleos o más rápidos es necesario supervisar los procesos existentes en el sistema. Si hay pocos procesos utilizando cada uno un CPU, entonces el servidor se beneficiaria en  tener núcleos más rápidos, esto tiende a pasar cuando se tienen procesos batch donde se procesan grandes cantidades de data. Pero si están activos todos los CPUs con muchos procesos concurrentes, entonces el sistema mejoraría su rendimiento utilizando más núcleos, lo cúal es común en aplicaciones con gran cantidad de usuarios accediendo a la BD.\\
+
+Otra situación donde es útil tener núcleos más veloces es al exportar o importar grandes cantidades de datos de la BD, proceso en el cúal el cuello de botella puede ser la CPU.
+
+\subsection{Memoria}
+
+Cuanta memoria es necesaria para para una aplicación depende del tamaño de la data de trabajo con el cual se ejecutan el común de operaciones. Generalmente agregar RAM mejora el rendimiento pero hay casos en los que no:
+
+\begin{itemize}
+\item Si el conjunto de data es suficiente para entrar en la RAM existente, más RAM no va a producir grandes beneficios, mejor rendimiento se va a obtener agregando procesadores más veloces.
+\item Cuando la data es tan grande que no puede entrar en cantidad de memoria alguna, por lo que es más útil aumentar la velocidad de los discos.
+\end{itemize}
+
+Aumentar la memoria ayuda así no toda la data entre, ya que el caché aumenta y por lo tanto los bloques más utilizados van a permanecer en memoria, aumentado así el rendimiento.
+
+\subsection{Discos}
+
+Los discos SAS son más confiables y rápidos que los SATA.\\
+
+Los discos enterprise SATA son mejores para RAID ya que informan rápidamente de los errores y el controlador RAID reconstruye la data errada. Los discos SAS en cambio procuran arreglar por si mismos el problema, ralentizando el arreglo de discos.\\
+
+Es buena práctica poner en producción solo discos que tengan tiempo en el mercado de tal manera que sus fallas ya hayan sido reportadas y corregidas.\\
+
+Los discos de estado sólido son más veloces que los discos magnéticos tradicionales, sobre todo al buscar información, pero aún no tienen la capacidad de almacenamiento de los discos magnéticos y son considerablemente más caros.
+
+\section{Configuración del S.O.}
+
+La configuración del Sistema Operativo para soportar una base de datos PostgreSQL incluye el sistema de archivos y los parámetros de disco.
+
+\subsection{Hdparm}
+
+En el caso de los *nix, para hacer más seguro el sistema para una Base de Datos, se debe inhabilitar el cache de escritura mediante el comando:\\
+
+\textbf{sudo hdparm -W 0 /dev/sda}
+
+\subsection{Sistemas de archivos}
+
+La escritura en sistemas de archivos tienen dos componentes principales:
+
+\begin{itemize}
+\item Los bloques de datos que se escriben en el disco.
+\item La metadata del sistema de archivos.
+\end{itemize}
+
+Al agregar un bloque de data en un archivo existente, se llevan a cabo las siguientes operaciones:
+
+\begin{itemize}
+\item Agregar la información del nuevo bloque a la metadata de espacio de disco utilizado.
+\item Escribir el bloque de data.
+\item Escribir la metadata del archivo referenciando el uso del nuevo bloque.
+\end{itemize}
+
+En caso de que se caiga el sistema a mitad de la operación, no se va a sobrescribir el nuevo bloque debido a que desde un inicio fue tomado en cuenta como un bloque utilizado.
+
+\subsection{Journaling}
+
+La forma actual de trabajar de los sistemas de archivos es mediante journaling, técnica por la cual se escribe el inicio y fin de cada escritura en el journal, se escribe la metadata del sistema de archivos y del archivo, el bloque de datos y su utilización.\\
+
+El journaling es algo pesado debido a que por cada operación en disco se debe escribir varias veces en el journal. Este se lleva a a cabo de la siguiente manera:
+
+\begin{itemize}
+\item Escribe la metadata del inicio de la transacción en el journal.
+\item Escribe la metadata del cambio de espacio utilizado en el journal.
+\item Escribe el cambio en el bloque de datos en el journal.
+\item Escribe el cambio en la metadata del archivo en el journal.
+\item Agregar el bloque de data a la metadata de la lista de espacio utilizado.
+\item Escribe el bloque de data.
+\item Escribe metadata del archivo referenciando el uso del bloque.
+\item Escribe la metadata del fin de la transacción en el journal.
+\end{itemize}
+
+Con estas operaciones se obtiene la habilidad de recuperar el sistema de cualquier caida. Si no se llega a terminar una transacción de escritura el sistema de archivos puede ignorar o deshacer cualquier trabajo parcial hecho hasta el momento.\\
+
+Este enfoque hace que sea pesado utilizar el journaling completo con una base de datos, ya que toda transacción es escrita cuatro veces. Para evitar la sobrecarga de trabajo, con la base de datos se utiliza solo journaling de la metadata, ya que PostgreSQL se encarga de la integridad de su data.
+
+\subsection{Sistemas de archivos de Linux}
+
+\subsubsection{Ext}
+
+Las versiones modernas de Ext (3 y 4) tienen tres niveles de journaling, que se definen como opciones al montarse el sistema de archivos:
+
+\begin{itemize}
+\item \textit{data=writeback}: Los cambios en la data no son guardados en el journal, solo los cambios en la metadata, pero el orden en que son guardados relativo a los bloques de data no es garantizado. Después de una caida de sistema, los archivos pueden quedar con basura al final por escrituras incompletas y se puede tener una mezcla de data vieja y nueva sobre los archivos.
+\item \textit{data=ordered}: La metadata es guardada en el journal pero no los cambios en la data, pero en todos los casos la metadata es escrita solo después de que los bloques de data hayan sido escritos. Después de una caída del sistema, no van a haber archivos de tamaños incorrectos.
+\item \textit{data=journal}: Journaling completo Los cambios en la data y la metadata son escritos en el journal antes de que el sistema de archivos sea tocado.
+\end{itemize}
+
+Debido a que realiza su propio chequeo de la integridad de los datos, en PostgreSQL no es necesario utilizar journaling completo, por lo que la opción ordered va a permitir mayores velocidades.\\
+
+El tamaño máximo para las particiones es de 16TB y para los archivos es de 2TB en ext3, límite que busca ser superado por ext4.
+
+\subsubsection{XFS}
+
+XFS es más veloz que los ext debido a que fue diseñado para ser eficiente en el journaling, pero solo registra los cambios de la metadata en el journal, por lo que se parece al modo \textit{writeback} de ext3 y es considerado inseguro. Para superar este problema se debe colocar:\\
+
+\textbf{full\_page\_writes = on}\\
+
+en \textit{postgresql.conf}.\\
+
+XFS tiene la ventaja de que es más eficiente al ser utilizado con RAID y además puede soportar archivos de más de un millón de TB, muy superior a los sistemas de archivos ext.
+
+\subsection{Configuración del sistema de archivos en Linux}
+
+Sin importar el sistema de archivos que se utilice, existen configuraciones que pueden mejorar su rendimiento.
+
+\subsubsection{Read ahead}
+
+El primer parámetro a configurar en Linux es el read-ahead de los dispositivos de almacenamiento. Cuando se hacen lecturas secuenciales que se mueven hacia adelante, esta funcionalidad hace que el Sistema Operativo solicite los bloques del disco antes de que la aplicación los solicite, ahorrando así mucho tiempo. \\
+
+Para ver el estado actual de read-ahead se ejecuta el comando:\\
+
+\textbf{\$ blockdev --getra /dev/sda}\\
+
+Para mejorar este parámetro se le aumenta a un valor entre 4096 y16384 mediante el siguiente comando:\\
+
+\textbf{\$ blockdev --setra 4096 /dev/sda}
+
+\subsubsection{Tiempo de acceso a los archivos (File access times)}
+
+Cada vez que se accede a un archivo en Linux, se actualiza un atributo del archivo llamado el tiempo del último acceso (atime). Esta sobrecarga se vuelve grande cuando se hacen muchas lecturas de un archivo, lo cuál no es deseable.\\
+
+Se puede eliminar este comportamiento agregando el parámetro noatime a las opciones de montaje en /etc/fstab.\\
+
+\textit{/dev/sda1 \/ ext3 noatime,errors=remount-ro 0 1}
+
+\subsubsection{Cache de lectura e intercambio de páginas}
+
+Linux procura utilizar todo espacio extra de RAM para poner en cache el sistema de archivos, al igual que PostgreSQL, compitiendo ambos por el recurso. Cuando el sistema tiene poca RAM, debe optar por reducir el tamaño del cache o incrementar el intercambio de páginas con el disco (swapping).  Este comportamiento est controlado por el parámetro swappiness del kernel.\\
+
+Para ver el valor actual del parámetro, se accede a /proc/sys/vm/swappiness mediante el comando:\\
+
+\textbf{sudo less /proc/sys/vm/swappiness}\\
+
+Y la forma más fácil de ajustarlo es agregar la siguiente línea en /etc/sysctl.conf:\\
+
+\textit{vm.swappiness=0}\\
+
+El valor de 0 disminuye el tamño del cache del S.O en vez de aumentar el swapping, lo cual redunda en un incremento de la perfomance en la mayoría de casos.\\
+
+Otro parámetro relacionado es el que controla la tendencia de Linux a permitir que los procesos separen más memoria de la que necesitan, la cuál se puede desactivar mediante el parámetro en /etc/sysctl.conf:\\
+
+\textit{vm.overcommit\_memory=2}
+
+\subsection{BSD}
+
+Los sistemas BSD, en especial FreeBSD han sido conocidos por su alta calidad, sobre todo en la implementación de servidores. Entre los sistemas de archivos de FreeBSD, ZFS es el más utilizado.
+
+\subsubsection{ZFS}
+
+En ZFS, por defecto se utilizan registros de 128KB de tamaño, lo cuál es útil cuando se leen grandes cantidades de información pero ineficiente cuando las lecturas son más pequeñas y al azar.\\
+
+En caso de que las lecturas sean de pequeñas cantidades de información al azar, se recomienda reducir el tamaño del registro de ZFS para igualarlo al de PostgreSQL de 8KB. Para llevarlo a cabo se utiliza el siguiente comando:\\
+
+\textbf{\$ zfs set recordsize=8K zp1\/data}\\
+
+Esta configuración se debe hacer antes de crear ninguna Bd en el dispositivo de almacenamiento.\\
+
+ZFS tiene funcionalidades que lo hacen muy apto para las bases de datos como implementar sumas de comprobación en toda lectura y escritura de bloques de datos y mayor velocidad para copiar grandes cantidades de información.
+
+\section{Memoria para el cache de la Base de Datos}
+
+Cuando se inicia un servidor PostgreSQL, este reserva una cantidad fija de bloques de memoria. Adicionalmente todo cliente que se conecta utiliza una cantidad de memoria, aumentandola a medida que el cliente utiliza recursos y realiza operaciones como ordenamientos y guarda data de transacciones en espera del commit.\\
+
+Algunos parámetros de la base de datos pueden ser definidos por los clientes a medida que se conectan. Por ejemplo, el parámetro  \textit{work\_mem} limita la cantidad de memoria que puede ser utilizada para ordenamiento y puede ser incrementado por el cliente luego de conectarse, utilizando memoria no ocupada por otros procesos.\\
+
+El mayor componente de la memoria compartida es la cache, la que se define por un parámetro llamado \textit{shared\_buffers}. Monitorear y optimizar como se usa esta memoria es el objetivo de la presente sección.
+
+\subsection{Unidades de memoria en postgresql.conf} 
+
+Para indicar la memoria que se quiere asignar a un parámetro hay que especificar la unidad de memoria, por ejemplo, si se desea especificar el tamaño del parámetro \textit{wal\_buffers} que controla cuanta memoria utiliza usar para el buffer del WAL, se escribe lo siguiente en postgresql.conf:\\
+
+\textit{wal\_buffers} = 64 KB\\
+
+La base de datos internamente convierte el valor en sus propias unidades internas, que para este parámetro son bloques de 8K.\\
+
+La vista \textit{pg\_settings} de la base de datos sirve para ver las configuraciones y la función \textit{current\_setting()} puede ser usada para mostrar información sobre los parámetros, al igual que \textit{SHOW}, pero además puede ser utilizada en una consulta.\\
+
+Por ejemplo:\\
+
+\begin{pyglist}
+show wal_buffers;
+SELECT name,setting,unit,current_setting(name) FROM pg_settings 
+WHERE name='wal_buffers';
+\end{pyglist}
+
+\subsection{Cache de la Base de Datos}
+
+El cache de la base de datos es el espacio de memoria donde PostgreSQL almacena los resultados de las consultas más utilizadas, de tal manera que pueda responder con mayor velocidad a las nuevas consultas que se presenten.\\
+
+Como regla general se puede establecer que darle un 25\% de la memoria RAM del sistema al parámetro \textit{shared\_buffers} es un número razonable para el cache de la base de datos.\\
+
+En caso de que la memoria RAM supere los 8GB de y la versión de PostgreSQL en ejecución sea una de 32 bits, no se aconseja incrementar shared\_buffers sobre los 2GB debido a que se puede sin memoria virtual.\\
+
+Se puede explorar el cache de la Base de Datos utilizando el módulo \textit{pg\_buffercache}, uno de los de módulos \textit{contrib} disponibles con PostgreSQL. En un servidor de producción no es vital pero sirve para aprender como funciona la base de datos con su memoria compartida con el fin de aprender a optimizarlo.
+
+
+\section{Configuración (postgresql.conf)}
+
+Las principales opciones de configuración de PostgreSQL están en el archivo postgresql.conf. Al cambiar las configuraciones se puede requerir reiniciar el servidor o recargar el archivo de configuración.\\
+
+Cada parámetro de configuración tiene un contexto asociado donde puede ser cambiado. Para saber cuál es, se consulta a la base de datos, por ejemplo:\\
+
+\begin{pyglist}
+select name,context from pg_settings;
+\end{pyglist}
+
+Los contextos son los siguientes:
+
+\begin{itemize}
+\item \textbf{internal}: Son parámetros sobre todo internos establecidos en tiempo de compilación. No pueden ser cambiados sin recompilar el servidor.
+\item \textbf{postmaster} Solo se actualizan reiniciando el servidor. Todos los parámetros referidos a memoria son de este tipo.
+\item \textbf{sighup}: Enviar al servidor una señal HUP va a causar que recargue \textit{postgresql.conf} y todos los cambios hechos a estos parámetros estarán inmediatamente activos.
+\item \textbf{backend}: Estos parámetros son similares a los de sighup excepto que los cambios hechos no van a afectar a las sesiones ejecutandose.
+\item \textbf{superuser}: Pueden ser modificados por cualquier superusuario en cualquier momento y se activan sin recargar. La mayoría de parámetros en este esquema se refieren a la configuración de los logs del sistema.
+\item \textbf{user}: Las sesiones individuales pueden ajustar estos parámetros en todo momento. Sus cambios solo impactarán en la sesión. La mayoría de estos parámetros alteran como se ejecutan las consultas.
+\end{itemize}
+
+
+Para reiniciar el servidor se debe reiniciar el servicio, lo cuál varía en cada S.O. En ubuntu y otros S.O de la familia debian se utiliza el siguiente comando:\\
+
+\textbf{sudo /etc/init.d/postgresql restart}\\
+
+Para recargar el archivo postgresql.conf en el servidor, es necesario conectarse como superusuario y  ejecutar la función pg\_reload\_conf:\\
+
+\textit{postgres=\# SELECT pg\_reload\_conf();}\\
+
+Se puede también enviar una señal HUP utilizando el comando kill.\\
+
+\textit{ps -eaf | grep "postgres -D"}\\
+
+\textbf{\$ kill -HUP 11185}\\
+
+El anterior comando envia la señal HUP al servidor postgresql de id 11185.
+
+\subsection{postgresql.conf}
+
+Algunos de los parámetros más importantes son:
+
+\begin{itemize}
+\item \textbf{listen\_addresses}: Indica a PostgreSQL que ips escuchar, por defecto es localhost pero se puede indicar una lista de ips o * para indicar todas.
+
+\item \textbf{Port}: Por defecto es 5432 pero puede ser cambiado por otro.
+
+\item \textbf{max\_connections}: Es el máximo numero de conexiones permitidas. Como cada conexión utiliza una pequeña cantidad de memoria, es posible para sistemas con poca memoria no permitir tantas conexiones. Es importante no establecer este parámetro muy por encima de lo que se necesita. Se desperdicia memoria compartida, lo cuál es muy oneroso en caso de que sea pequeña.
+
+\item \textbf{shared\_buffers}: define la cantidad de memoria que se comparte a través de todas las conexiones para guardar las páginas recientemente accedidas. Tiene efecto sobre todo en la perfomance de las consultas. Es deseable que este a un valor alto, por lo menos un 25\% de la memoria.
+
+\item \textbf{effective\_cache\_size}: Es un estimado de cuanta memoria se espera este disponible en los caches del SO y PostgreSQL. Es utilizado por el planificador de consultas para deducir si los planes considerados entrarán en la RAM o no. Si se tiene un servidor dedicado este valor debe ser un 50\% de la RAM.
+
+\item \textbf{work\_mem}: Controla la cantidad máxima de memoria asignada a cada operación como ordenamiento, joins, etc. La cantidad óptima de memoria depende del tipo de trabajo que se lleve a cabo, la cantidad de memoria de la que se disponga entre otros. Si el tipo de trabajo es  ligero entonces este valor debe ser bajo, caso contrario debe ser más alto. Es una de las maneras más efectivas de incrementar la velocidad del servidor. La forma genérica de asignarlo es considerar cuanto RAM hay fuera de shared\_buffers dividida entre max\_connections y tomar un porcentaje del resultado, la mitad sería una cantidad elevada. 
+
+\item \textbf{maintenance\_work\_mem}: Es el total de memoria asignada para labores de mantenimiento. Aproximadamente cada proceso de mantenimiento (VACUUM, CREATE INDEX, ALTER TABLE ADD FOREIGN KEY) no necesita más de del 5\% de la RAM, lo que es 50MB por cada GB de memoria.
+
+\item \textbf{wal\_buffers}: El valor por defecto es de 64KB, lo cuál es muy bajo para los tamaños actuales de la RAM, por lo que incrementarlo a 16MB es normal actualmente.
+
+\item \textbf{effective\_cache\_size}: Al hacer operaciones que requieren gran uso de memoria, la base de datos compara su tamaño con el de todos los caches reunidos (propio y del Sistema operativo). Este parámetro no reserva memoria, solo sirve para que la Base de datos compare el tamaño de las operaciones a realizar para decidir el curso de acción. En UNIX se calacula sumando los valores de \textit{free} y \textit{cached} que se ven en los comandos \textit{free} o \textit{top} y sumando además el valor de  \textit{shared\_buffers}.
+
+\end{itemize}
+
+\subsection{Configuración de logs}
+
+La generación de Logs es importante debido a que permite conocer las acciones de la BD y los usuarios. Dependiendo del nivel de Logs, se va a generar mayor o menor cantidad de información que permitirá conocer las acciones de la Bd y sus usuarios en un periodo determinado de tiempo.\\
+
+El archivo de logs generalmente está en /var/log en los sistemas basados en Unix.\\
+
+La configuración de los logs se realiza en postgresql.conf (generalmente localizado en /etc/postgresql en máquinas *nix).\\
+
+Las configuraciones por defecto de logs en postgresql.conf son las siguientes:\\
+
+La opción de configuración \emph{log\_destination} dirige los errores hacia la salida estándar, se pueden redirigir hacia un archivo utilizando pg\_ctl -l al iniciar el servidor.
+
+\begin{itemize}
+\item \emph{log\_destination = 'stderr':}
+\end{itemize}
+
+El parámetro \emph{logging\_collector} si se pone en off significa que no se quiere recoger la salida de errores estándar para escribirla en otro sitio. Si se pone en on se crea un archivo de logs por día.
+
+\begin{itemize}
+\item \emph{logging\_collector = off}
+\end{itemize}
+
+El parámetro \emph{log\_line\_prefix} se puede configurar para agregar datos al inicio de toda línea del log. Si está vacío no se agrega nada.
+
+\begin{itemize}
+\item \emph{log\_line\_prefix = ''}
+\end{itemize}
+
+El parámetro \emph{log\_directory} indica el directorio donde se crean los logs.
+
+\begin{itemize}
+\item \emph{log\_directory = 'pg\_log'}
+\end{itemize}
+
+Y \emph{log\_filename} es el formato del nombre de los archivos de logs de Postgresql, utilizando fecha y hora.
+
+\begin{itemize}
+\item \emph{log\_filename = 'postgresql-\%Y-\%m-\%d\_\%H\%M\%S.log'}
+\end{itemize}
+
+El sistema operativo no se encarga del mantenimiento de los logs, por lo que el administrador del sistema será el responsable de hacerlo, de preferencia utilizando algún método automático como un script.\\
+
+Detalle de cada parámetro de configuración:
+
+\subsubsection{log\_line\_prefix}
+
+Este parámetro de configuración está vacío por defecto, se le pueden añadir parámetros para que se agreguen al inicio de cada línea del log.
+
+\begin{itemize}
+\item \%t: Timestamp
+\item \%u: Database user name
+\item \%r: Remote host connection is from
+\item \%d: Database connection is to
+\item \%p: Process ID of connection
+\end{itemize}
+
+Aunque al inicio no se sepa porque se desean estos valores, son muy útiles para rastrear comportamientos.\\
+
+Para hacer los logs de postgreSQL compatibles con pgFouine (una herramienta para analizar logs) se puede utilizar alguna de estas líneas.
+
+\begin{itemize}
+\item \emph{log\_line\_prefix = '\%t [\%p]: [\%l-1]' }
+\item \emph{log\_line\_prefix = '\%t [\%p]: [\%l-1] user=\%u,db=\%d'}
+\item \emph{log\_line\_prefix = '\%t [\%p]: [\%l-1] user=\%u,db=\%d,remote=\%r'}
+\end{itemize}
+
+\subsubsection{log\_statement}
+
+Para decidir el detalle del log que se va a guardar se utiliza el parámetro de configuración log\_statement.
+
+\begin{itemize}
+\item \textbf{None}: ningún log
+\item \textbf{ddl}: Solo data definition language como create y drop.
+\item \textbf{Mod}: Registra todas las acciones que implican cambio de un valor, lo cuál en la práctica es todo menos las consultas SELECT.
+\item \textbf{All}: Toda acción, es en general impráctico ya que genera un crecimiento muy rápido del tamaño del log (he tenido logs que en días alcanzaron los 20GB).
+\end{itemize}
+
+\subsubsection{log\_min\_duration\_statement}
+
+En caso se desee solo registrar transacciones que estén durando más de lo esperado, se puede utilizar la opción de configuración \emph{log\_min\_duration\_statement} para registrar solo registrar las acciones que duren más de una cantidad de tiempo medido en milisegundos.\\
+
+Por ejemplo, \emph{log\_min\_duration\_statement=1000} significa que se registrarán las acciones que duren más de un segundo, muy útil para ubicar problemas de perfomance.
+
+\subsubsection{Logs en CSV}
+
+Un formato reciente (presente desde postgreSQL 8.3) son los logs guardados como archicos csv. Este tipo de logs permiten que se puedan analizar con diversas herramientas e incluso importarlos en la misma BD para llevar a cabo su análisis mediante consultas SQL.\\
+
+Para activar esta funcionalidad, se debe ajustar el destino de los logs y poner en on el colector.\\
+
+\textit{log\_destination = 'csvlog'\\ 
+logging\_collector = on\\}
+
+Luego de efectuar los cambios, se debe reiniciar el servidor y de ahí en adelante los logs se guardaran en archivos .csv en vez de .log.\\
+
+Una vez generado un log en csv, secrea la tabla \textit{postgres\_log} con la estructura del csv:\\
+
+\begin{pyglist}
+CREATE TABLE postgres_log
+(
+log_time timestamp(3) with time zone,
+user_name text,
+database_name text,
+process_id integer,
+connection_from text,
+session_id text,
+session_line_num bigint,
+command_tag text,
+session_start_time timestamp with time zone,
+virtual_transaction_id text,
+transaction_id bigint,
+error_severity text,
+sql_state_code text,
+message text,
+detail text,
+hint text,
+internal_query text,
+internal_query_pos integer,
+context text,
+query text,
+query_pos integer,
+location text,
+application_name text,
+PRIMARY KEY (session_id, session_line_num)
+);
+\end{pyglist}
+
+Y se importa a la Bd mediante:\\
+
+\begin{pyglist}
+COPY postgres_log FROM 
+'/home/postgres/data/pg_log/postgresql-2010-03-28_215404.csv' WITH CSV;
+\end{pyglist}
+
+Una vez importado se pueden ejecutar queries que lo analicen, como por ejemplo:\\
+
+\begin{pyglist}
+SELECT min(log_time),max(log_time) FROM postgres_log WHERE command_tag='COMMIT';
+\end{pyglist}
+
+Comando sql que muestra el primer y último commit enviado a la BD.
+
+\subsubsection{Análisis de Logs}
+
+Una vez se tienen los logs se necesita analizarlos para conocer la perfomance de nuestra BD.\\
+
+\textbf{pg\_stat\_statements:}\\
+
+Es un módulo contrib que se instala utilizando:\\
+
+\begin{pyglist}
+CREATE EXTENSION pg_stat_statements;
+\end{pyglist}
+
+Y se habilita configurando el siguiente parámetro en postgresql.conf.\\
+
+\emph{shared\_preload\_libraries = 'pg\_stat\_statements'} \\
+
+Luego de reiniciar el servidor y ejecutar consultas, la vista pg\_stat\_statements se va a llenar con información la cuál puede ser consultada como cualquier otra vista.
+
+\begin{pyglist}
+SELECT total_time, query FROM pg_stat_statements ORDER BY total_time DESC;
+\end{pyglist}
+
+
+\section{Configuración de un nuevo servidor}
+
+La optimización inicial de un servidor puede ser un proceso mecánico:
+
+\begin{itemize}
+\item Ajustar los logs para ser más verbosos.
+\item Utilizar un 25\% para \textit{shared\_buffers}.
+\item Estimar generosamente el máximo número de conexiones, ya que a partir de ese número el sistema rechazará nuevas.
+\item Iniciar el servidor y asignar \textit{effective\_cache\_size} sumando \textit{shared\_buffers} y la cache del Sistema Operativo.
+\item Calcular \textit{work\_mem} dividiendo el cache del S.O entre \textit{max\_connections} y luego entre dos.
+\item Establecer \textit{maintenance\_work\_mem} a un valor de 50MB por cada GB de RAM.
+\item Incrementar \textit{wal\_buffers} a 16 MB.
+\end{itemize}
+
+\subsection{Efectos del cache de la BD}
+
+Es importante resaltar que cuando se ejecuta una consulta varias veces, las consultas posteriores van a ser más rápidas debido a que los resultados están en la cache de la base de datos.\\
+
+Para eliminar el efecto del cache al probar varias consultas con un mismo fin, se debe ejecutar varias veces las consultas de tal modo que la data este en cache y así deje de impactar en la comparación.
+
+\section{Índices}
+
+Un índice es una lista organizada de valores que aparece en una o más columnas de una tabla. Si se desea un subconjunto de los registros de la tabla, una consulta puede usar el índice para determinar que filas son las que busca en vez de examinar cada fila. Además, debido a que un índice tiene un orden, sirven para incrementar la velocidad del ordenamiento de los registros de una tabla.\\
+
+Los índices ayudan a la base de datos a disminuir la cantidad de data que necesita procesar para ejecutar una consulta.\\
+
+Para crear un índice en una tabla se ejecuta el siguiente comando:\\
+
+\begin{pyglist}
+CREATE INDEX i ON t(v);
+\end{pyglist}
+
+Donde i es el nombre del índice y v es el campo de la tabla con el que se va a crear el índice.\\
+
+Los índices pueden ser muy grandes y su mantenimiento ser costoso en recursos para la base de datos, por lo que su creación debe estar justificada por importantes mejoras en la velocidad de las consultas.\\
+
+Mediante EXPLAIN ANALYZE se puede hallar si fue útil o no la creación del índice.\\
+
+Cuando un campo es definido como Primary Key al ser creada la tabla, automáticamente se le crea un UNIQUE INDEX para asegurar que todos sus valores sean únicos. Para que no se acepten valores nulos es una buena práctica agregar NOT NULL al campo.
+
+\newpage
+
+Ejercicios:\\
+
+\begin{enumerate}
+\item Determinar si su servidor necesita más RAM.
+\item Determinar si su servidor necesita más núcleos o núcleos más potentes.
+\item Determinar que sistema de archivos será mejor para su servidor.
+\item Calcular el tamaño ideal de su parámetro \textit{shared\_buffers}.
+\item Calcular el tamaño ideal de su parámetro \textit{work\_mem}.
+\item Calcular el tamaño ideal de su parámetro \textit{effective\_cache\_size}.
+\item Ejecute un SELECT sobre una tabla y analice su plan.
+\item Haga lo mismo para un UPDATE y un INSERT.
+\end{enumerate}
+
